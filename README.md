@@ -42,11 +42,49 @@ acknowledged well within its ~10s timeout; the worker runs the (slow) scan off t
 
 ## Prerequisites
 
-- A **GitHub App** registered on your enterprise (`ghe.com`) with: webhook URL pointing at this
-  service, a webhook secret, and permissions — *Checks: write*, *Contents: write*, *Pull requests:
-  write*, *Metadata: read* — subscribed to the *Pull request* and *Installation* events.
+- A **GitHub App** registered on your enterprise (`ghe.com`), pointed at this service's webhook URL
+  with the permissions and event subscriptions described in [GitHub App setup](#github-app-setup).
 - A **Snyk** API token or OAuth client-credentials service account, and the Snyk org IDs you map to.
 - A host that GitHub can reach over HTTPS (Azure Container Apps or AWS App Runner — both templated).
+
+## GitHub App setup
+
+Register the App under your enterprise's developer settings
+(**Settings → Developer settings → GitHub Apps → New GitHub App**), then configure the following. The
+App ID and a generated private key (`.pem`) from this page become `GitHub:AppId` and
+`GitHub:PrivateKeyPem` (inline) or `GitHub:PrivateKeyPath` (file).
+
+### Webhook
+
+| Setting | Value |
+| --- | --- |
+| Webhook URL | `https://<your-host>/api/github/webhooks` (the deploy templates emit this as their `webhookUrl` / `WebhookUrl` output) |
+| Content type | `application/json` |
+| Secret | A random string; set the identical value as `GitHub:WebhookSecret` so deliveries pass `X-Hub-Signature-256` validation |
+| SSL verification | Enabled |
+
+### Repository permissions
+
+| Permission | Access | Why |
+| --- | --- | --- |
+| **Metadata** | Read-only | Mandatory baseline for every GitHub App (selected automatically) |
+| **Checks** | Read and write | Publish the PR status Check Run that can gate merges |
+| **Contents** | Read and write | Clone the repository to scan (read); create the fix branch and commit manifest changes (write) |
+| **Pull requests** | Read and write | Post the summary comment and open automated fix PRs; also the minimum access required to subscribe to the *Pull request* event |
+
+No organization or account permissions are required.
+
+> If you run with `Snyk:OpenFixPullRequests=false` (status checks and comments only, no fix PRs),
+> **Contents** can be reduced to **Read-only** — clone-to-scan only needs read access.
+
+### Subscribe to events
+
+- **Pull request** — triggers the scan on the `opened`, `synchronize`, and `reopened` actions.
+
+The **installation** and **installation_repositories** events — used to maintain the
+org→installation registry as the App is installed, suspended, or removed — are delivered to every
+GitHub App automatically. There is no checkbox for them and you cannot unsubscribe, so no action is
+needed beyond setting the webhook URL above.
 
 ## Configuration
 
