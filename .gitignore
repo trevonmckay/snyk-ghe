@@ -17,7 +17,7 @@ appsettings.Local.json
 *.env
 
 ## Local Bicep params (may contain secrets)
-infra/*.local.bicepparam
+.azure/*.local.bicepparam
 
 ## Local tooling
 .claude/settings.local.json

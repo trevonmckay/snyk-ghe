@@ -25,8 +25,8 @@ az acr build -r <acrName> -t snyk-ghe:1.0.0 .
 # 3. Deploy (secrets passed inline; PEM read from file)
 az deployment group create \
   -g rg-snyk-ghe \
-  -f infra/main.bicep \
-  -p infra/main.sample.bicepparam \
+  -f .azure/main.bicep \
+  -p .azure/main.sample.bicepparam \
   -p deployerObjectId=$(az ad signed-in-user show --query id -o tsv) \
      containerImage=<acrName>.azurecr.io/snyk-ghe:1.0.0 \
      gitHubPrivateKeyPem=@app-private-key.pem \

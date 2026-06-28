@@ -28,7 +28,7 @@ docker push "$REPO:1.0.0"
 # 2. Deploy the stack (secrets passed as parameters; keep them out of shell history where possible)
 aws cloudformation deploy \
   --stack-name snyk-ghe \
-  --template-file infra/aws/main.yaml \
+  --template-file .aws/main.yaml \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
     ContainerImageUri="$REPO:1.0.0" \
@@ -50,4 +50,4 @@ aws cloudformation describe-stacks --stack-name snyk-ghe \
 - **No CreateTable at runtime:** the stack pre-creates the DynamoDB table and sets `Storage__CreateTableIfMissing=false`, so the instance role only needs data + `DescribeTable` permissions (least privilege).
 - **Credentials:** the container uses the default AWS credential chain, which resolves to the App Runner **instance role** — no access keys in config, mirroring the Azure managed-identity approach.
 - **Secret rotation:** update a secret with `aws secretsmanager put-secret-value`; App Runner picks up the new value on the next deployment/restart.
-- **Moving to Azure later:** redeploy `infra/main.bicep` and set `Storage:Provider=AzureTable` (the default). No code changes.
+- **Moving to Azure later:** redeploy `.azure/main.bicep` and set `Storage:Provider=AzureTable` (the default). No code changes.

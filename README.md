@@ -91,8 +91,8 @@ host per installation.
 
 ## Deploy
 
-- **Azure:** `infra/main.bicep` (Container Apps + Table Storage + Key Vault). See `infra/README.md`.
-- **AWS:** `infra/aws/main.yaml` (App Runner + DynamoDB + Secrets Manager). See `infra/aws/README.md`.
+- **Azure:** `.azure/main.bicep` (Container Apps + Table Storage + Key Vault). See `.azure/README.md`.
+- **AWS:** `.aws/main.yaml` (App Runner + DynamoDB + Secrets Manager). See `.aws/README.md`.
 
 ## Build & test
 
