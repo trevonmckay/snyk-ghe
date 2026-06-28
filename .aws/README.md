@@ -1,17 +1,17 @@
 # Infrastructure (AWS / CloudFormation)
 
-`main.yaml` provisions the AWS equivalent of the Azure stack, for running the service on **App Runner**.
+`main.yaml` provisions the full AWS footprint for the service, running on **App Runner**.
 
-| Resource | Purpose | Azure equivalent |
-| --- | --- | --- |
-| App Runner service | Runs the container, managed HTTPS endpoint, autoscaling | Container Apps |
-| DynamoDB table (`installations`) | Installation registry | Storage Table |
-| Secrets Manager (4 secrets) | App private key, webhook secret, Snyk token, admin key | Key Vault |
-| IAM instance role | App's runtime identity (DynamoDB + secret reads) | Managed identity |
-| IAM access role | Lets App Runner pull from ECR | AcrPull role |
-| ECR (created out-of-band) | Hosts the image | ACR |
+| Resource | Purpose |
+| --- | --- |
+| App Runner service | Runs the container, managed HTTPS endpoint, autoscaling |
+| DynamoDB table (`installations`) | Installation registry |
+| Secrets Manager (4 secrets) | App private key, webhook secret, Snyk token, admin key |
+| IAM instance role | App's runtime identity (DynamoDB + secret reads) |
+| IAM access role | Lets App Runner pull from ECR |
+| ECR (created out-of-band) | Hosts the image |
 
-The app runs unchanged on either cloud — set `Storage:Provider=DynamoDb` and it uses `DynamoDbGitHubInstallationRegistry` instead of the Table Storage one. The template sets that env var for you.
+Set `Storage:Provider=DynamoDb` so the service uses `DynamoDbGitHubInstallationRegistry`. The template sets that env var for you.
 
 ## Deploy
 
@@ -48,6 +48,5 @@ aws cloudformation describe-stacks --stack-name snyk-ghe \
 
 - **`CAPABILITY_IAM`** is required because the stack creates the two IAM roles.
 - **No CreateTable at runtime:** the stack pre-creates the DynamoDB table and sets `Storage__CreateTableIfMissing=false`, so the instance role only needs data + `DescribeTable` permissions (least privilege).
-- **Credentials:** the container uses the default AWS credential chain, which resolves to the App Runner **instance role** — no access keys in config, mirroring the Azure managed-identity approach.
+- **Credentials:** the container uses the default AWS credential chain, which resolves to the App Runner **instance role** — no access keys in config.
 - **Secret rotation:** update a secret with `aws secretsmanager put-secret-value`; App Runner picks up the new value on the next deployment/restart.
-- **Moving to Azure later:** redeploy `.azure/main.bicep` and set `Storage:Provider=AzureTable` (the default). No code changes.
