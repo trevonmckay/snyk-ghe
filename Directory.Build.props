@@ -1,0 +1,9 @@
+<Project>
+
+  <PropertyGroup>
+    <!-- Run the .editorconfig code-style rules as part of `dotnet build`, not just in the IDE,
+         so the team conventions are enforced in CI. -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+
+</Project>

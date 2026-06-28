@@ -1,0 +1,45 @@
+root = true
+
+[*.cs]
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+
+# S3267: Loops should be simplified with "LINQ" expressions
+dotnet_diagnostic.S3267.severity = none
+
+# IDE0290: Use primary constructor — we do not use primary constructors on classes.
+dotnet_diagnostic.IDE0290.severity = none
+
+# --- Team coding conventions (enforced) ---
+
+# Rule 3: namespaces use brackets (block-scoped, not file-scoped).
+csharp_style_namespace_declarations = block_scoped:warning
+
+# Rule 1: do not prefer primary constructors on classes/structs.
+# (Roslyn has no analyzer that flags primary-constructor *usage*; the CLAUDE.md convention is
+#  authoritative. Positional records are exempt.)
+csharp_style_prefer_primary_constructors = false:warning
+
+# Rule 2: private instance fields are prefixed with _ and camelCased.
+dotnet_naming_rule.constant_fields_pascal.severity = warning
+dotnet_naming_rule.constant_fields_pascal.symbols = constant_fields
+dotnet_naming_rule.constant_fields_pascal.style = pascal_case
+dotnet_naming_symbols.constant_fields.applicable_kinds = field
+dotnet_naming_symbols.constant_fields.required_modifiers = const
+
+dotnet_naming_rule.static_readonly_fields_pascal.severity = warning
+dotnet_naming_rule.static_readonly_fields_pascal.symbols = static_readonly_fields
+dotnet_naming_rule.static_readonly_fields_pascal.style = pascal_case
+dotnet_naming_symbols.static_readonly_fields.applicable_kinds = field
+dotnet_naming_symbols.static_readonly_fields.required_modifiers = static, readonly
+
+dotnet_naming_rule.private_instance_fields_underscore.severity = warning
+dotnet_naming_rule.private_instance_fields_underscore.symbols = private_instance_fields
+dotnet_naming_rule.private_instance_fields_underscore.style = underscore_camel_case
+dotnet_naming_symbols.private_instance_fields.applicable_kinds = field
+dotnet_naming_symbols.private_instance_fields.applicable_accessibilities = private, private_protected
+
+dotnet_naming_style.pascal_case.capitalization = pascal_case
+dotnet_naming_style.underscore_camel_case.capitalization = camel_case
+dotnet_naming_style.underscore_camel_case.required_prefix = _

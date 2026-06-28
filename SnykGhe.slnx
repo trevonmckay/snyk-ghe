@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".editorconfig" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/SnykGhe.WebhookService/SnykGhe.WebhookService.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SnykGhe.WebhookService.Tests/SnykGhe.WebhookService.Tests.csproj" />
+  </Folder>
+</Solution>

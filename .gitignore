@@ -1,0 +1,23 @@
+## .NET
+bin/
+obj/
+*.user
+.vs/
+
+## Build output
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+
+## Secrets — never commit App private keys, tokens, or local overrides
+*.pem
+appsettings.*.Local.json
+appsettings.Local.json
+.env
+*.env
+
+## Local Bicep params (may contain secrets)
+infra/*.local.bicepparam
+
+## Local tooling
+.claude/settings.local.json

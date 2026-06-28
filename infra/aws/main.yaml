@@ -1,0 +1,192 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Snyk GHE webhook service on AWS App Runner (DynamoDB + Secrets Manager).
+
+Parameters:
+  ContainerImageUri:
+    Type: String
+    Description: ECR image URI with tag, e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/snyk-ghe:1.0.0
+
+  TableName:
+    Type: String
+    Default: installations
+
+  GitHubApiBaseUrl:
+    Type: String
+    Description: ghe.com REST API base, e.g. https://api.SUBDOMAIN.ghe.com/
+
+  GitHubAppId:
+    Type: String
+
+  SnykDefaultOrgId:
+    Type: String
+    Default: ''
+
+  SnykDefaultSeverity:
+    Type: String
+    Default: high
+
+  SnykDefaultEcosystem:
+    Type: String
+    Default: nuget
+
+  GitHubPrivateKeyPem:
+    Type: String
+    NoEcho: true
+
+  GitHubWebhookSecret:
+    Type: String
+    NoEcho: true
+
+  SnykToken:
+    Type: String
+    NoEcho: true
+
+  AdminApiKey:
+    Type: String
+    NoEcho: true
+
+Resources:
+  InstallationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref TableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: Org
+          AttributeType: S
+      KeySchema:
+        - AttributeName: Org
+          KeyType: HASH
+
+  GitHubPrivateKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: snyk-ghe/github-app-private-key
+      SecretString: !Ref GitHubPrivateKeyPem
+
+  WebhookSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: snyk-ghe/github-webhook-secret
+      SecretString: !Ref GitHubWebhookSecret
+
+  SnykTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: snyk-ghe/snyk-token
+      SecretString: !Ref SnykToken
+
+  AdminApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: snyk-ghe/admin-api-key
+      SecretString: !Ref AdminApiKey
+
+  # Lets App Runner pull the image from a private ECR repository.
+  AppRunnerEcrAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: build.apprunner.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
+
+  # The running service's identity: DynamoDB data access + reading the injected secrets.
+  AppRunnerInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: tasks.apprunner.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: registry-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt InstallationsTable.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref GitHubPrivateKeySecret
+                  - !Ref WebhookSecret
+                  - !Ref SnykTokenSecret
+                  - !Ref AdminApiKeySecret
+
+  Service:
+    Type: AWS::AppRunner::Service
+    Properties:
+      ServiceName: snyk-ghe
+      SourceConfiguration:
+        AutoDeploymentsEnabled: false
+        AuthenticationConfiguration:
+          AccessRoleArn: !GetAtt AppRunnerEcrAccessRole.Arn
+        ImageRepository:
+          ImageIdentifier: !Ref ContainerImageUri
+          ImageRepositoryType: ECR
+          ImageConfiguration:
+            Port: '8080'
+            RuntimeEnvironmentVariables:
+              - Name: Storage__Provider
+                Value: DynamoDb
+              - Name: Storage__TableName
+                Value: !Ref TableName
+              - Name: Storage__AwsRegion
+                Value: !Ref AWS::Region
+              # The table is created by this stack, so the app must not attempt CreateTable.
+              - Name: Storage__CreateTableIfMissing
+                Value: 'false'
+              - Name: GitHub__ApiBaseUrl
+                Value: !Ref GitHubApiBaseUrl
+              - Name: GitHub__AppId
+                Value: !Ref GitHubAppId
+              - Name: Snyk__DefaultSnykOrgId
+                Value: !Ref SnykDefaultOrgId
+              - Name: Snyk__DefaultSeverityThreshold
+                Value: !Ref SnykDefaultSeverity
+              - Name: Snyk__DefaultEcosystem
+                Value: !Ref SnykDefaultEcosystem
+            RuntimeEnvironmentSecrets:
+              - Name: GitHub__PrivateKeyPem
+                Value: !Ref GitHubPrivateKeySecret
+              - Name: GitHub__WebhookSecret
+                Value: !Ref WebhookSecret
+              - Name: Snyk__Token
+                Value: !Ref SnykTokenSecret
+              - Name: Storage__AdminApiKey
+                Value: !Ref AdminApiKeySecret
+      InstanceConfiguration:
+        Cpu: 0.5 vCPU
+        Memory: 1 GB
+        InstanceRoleArn: !GetAtt AppRunnerInstanceRole.Arn
+      HealthCheckConfiguration:
+        Protocol: HTTP
+        Path: /healthz
+        Interval: 10
+        Timeout: 5
+        HealthyThreshold: 1
+        UnhealthyThreshold: 5
+
+Outputs:
+  WebhookUrl:
+    Description: Configure this as the GitHub App webhook URL.
+    Value: !Sub 'https://${Service.ServiceUrl}/api/github/webhooks'
+  ServiceUrl:
+    Value: !GetAtt Service.ServiceUrl
+  DynamoDbTable:
+    Value: !Ref InstallationsTable
