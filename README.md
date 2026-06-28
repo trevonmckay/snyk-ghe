@@ -67,6 +67,28 @@ curl -X PUT https://<host>/api/admin/orgs/my-github-org \
   -d '{"snykOrgId":"<snyk-org-uuid>","severityThreshold":"high","ecosystem":"nuget"}'
 ```
 
+### One app, one enterprise
+
+This service is built for **a single GitHub App registered on a single GitHub host**. A GitHub App
+is registered against exactly one host (your `ghe.com` enterprise, or one GHES server), and all of
+its installations live on that host. One deployment therefore serves **many orgs but exactly one
+host**.
+
+That is why `GitHub:ApiBaseUrl`, `GitHub:AppId`, and the private key are **static required settings**
+rather than something discovered at runtime:
+
+- **`AppId` + private key** identify the one app registration — constant regardless of how many orgs install it.
+- **`ApiBaseUrl`** is invariant for a deployment: the app cannot span two hosts, so the REST base
+  (`https://api.SUBDOMAIN.ghe.com/`) never changes. Webhook payloads *do* carry fully-qualified API
+  URLs, so the host is technically derivable — but it would be a constant either way, and the app also
+  makes calls outside of any webhook (e.g. an installation token exchange), which need the base
+  configured up front.
+
+To run this against a **different** enterprise/host, register a separate GitHub App there and deploy a
+separate instance with its own `ApiBaseUrl`, `AppId`, and key. Pointing one deployment at multiple
+GitHub hosts is out of scope — that would require a distributable app that discovers each operator's
+host per installation.
+
 ## Deploy
 
 - **Azure:** `infra/main.bicep` (Container Apps + Table Storage + Key Vault). See `infra/README.md`.
