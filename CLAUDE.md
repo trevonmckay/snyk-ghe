@@ -16,10 +16,11 @@ pluggable registry (Azure Table Storage or AWS DynamoDB).
 These are enforced via `.editorconfig` + `EnforceCodeStyleInBuild` (`Directory.Build.props`), so a
 violation is a build warning. CI should build with `-warnaserror` to make them blocking.
 
-1. **No primary constructors on classes or structs.** Use an explicit constructor and assign fields
-   in the body. (Roslyn cannot flag primary-constructor *usage*, so this rule is convention-enforced,
-   not analyzer-enforced — follow it by hand.) **Positional records are exempt** — `record Foo(...)`
-   is idiomatic and fine.
+1. **No primary constructors — anywhere.** Classes and structs use an explicit constructor that
+   assigns fields in the body. **Records too:** declare records with explicit `{ get; init; }`
+   properties (`required` where a value must be supplied) and construct them with object initializers
+   — not the positional `record Foo(string Bar)` form. (Roslyn cannot flag primary-constructor
+   *usage*, so this rule is convention-enforced, not analyzer-enforced — follow it by hand.)
 2. **Private instance fields are prefixed with `_`** and camelCased (`_logger`, `_options`). Constants
    and `static readonly` fields stay PascalCase.
 3. **Namespaces use brackets** (block-scoped), not file-scoped.

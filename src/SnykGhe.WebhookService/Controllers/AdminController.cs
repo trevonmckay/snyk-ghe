@@ -9,7 +9,12 @@ using SnykGhe.WebhookService.Storage;
 namespace SnykGhe.WebhookService.Controllers
 {
     /// <summary>Request body for setting a GitHub org's explicit Snyk mapping.</summary>
-    public sealed record OrgMappingRequest(string SnykOrgId, string? SeverityThreshold, string? Ecosystem);
+    public sealed record OrgMappingRequest
+    {
+        public string SnykOrgId { get; init; } = string.Empty;
+        public string? SeverityThreshold { get; init; }
+        public string? Ecosystem { get; init; }
+    }
 
     /// <summary>
     /// Sets the explicit Snyk org mapping and policy overrides per GitHub org. Guarded by an API key;

@@ -9,7 +9,11 @@ namespace SnykGhe.WebhookService.GitHub
     /// Credentials for a single GitHub App installation: an Octokit client scoped to the
     /// installation, plus the raw access token (needed for authenticated git clone).
     /// </summary>
-    public sealed record InstallationCredentials(GitHubClient Client, string Token);
+    public sealed record InstallationCredentials
+    {
+        public required GitHubClient Client { get; init; }
+        public required string Token { get; init; }
+    }
 
     /// <summary>
     /// Mints GitHub App JWTs and per-installation access tokens against the ghe.com tenant.
@@ -72,7 +76,7 @@ namespace SnykGhe.WebhookService.GitHub
         {
             var appClient = CreateAppClient();
             AccessToken token = await appClient.GitHubApps.CreateInstallationToken(installationId);
-            return new InstallationCredentials(CreateClient(new Credentials(token.Token)), token.Token);
+            return new InstallationCredentials { Client = CreateClient(new Credentials(token.Token)), Token = token.Token };
         }
     }
 }

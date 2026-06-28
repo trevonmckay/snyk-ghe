@@ -16,9 +16,9 @@ dotnet_diagnostic.IDE0290.severity = none
 # Rule 3: namespaces use brackets (block-scoped, not file-scoped).
 csharp_style_namespace_declarations = block_scoped:warning
 
-# Rule 1: do not prefer primary constructors on classes/structs.
+# Rule 1: do not prefer primary constructors anywhere (classes, structs, and records).
 # (Roslyn has no analyzer that flags primary-constructor *usage*; the CLAUDE.md convention is
-#  authoritative. Positional records are exempt.)
+#  authoritative. Declare records with explicit { get; init; } properties, not positional syntax.)
 csharp_style_prefer_primary_constructors = false:warning
 
 # Rule 2: private instance fields are prefixed with _ and camelCased.

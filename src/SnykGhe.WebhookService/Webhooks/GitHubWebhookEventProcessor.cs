@@ -49,14 +49,16 @@ namespace SnykGhe.WebhookService.Webhooks
                 return;
             }
 
-            var request = new ScanRequest(
-                InstallationId: pullRequestEvent.Installation.Id,
-                Owner: pullRequestEvent.Repository.Owner.Login,
-                Repo: pullRequestEvent.Repository.Name,
-                CloneUrl: pullRequestEvent.Repository.CloneUrl,
-                PrNumber: (int)pullRequestEvent.Number,
-                HeadRef: pullRequestEvent.PullRequest.Head.Ref,
-                HeadSha: pullRequestEvent.PullRequest.Head.Sha);
+            var request = new ScanRequest
+            {
+                InstallationId = pullRequestEvent.Installation.Id,
+                Owner = pullRequestEvent.Repository.Owner.Login,
+                Repo = pullRequestEvent.Repository.Name,
+                CloneUrl = pullRequestEvent.Repository.CloneUrl,
+                PrNumber = (int)pullRequestEvent.Number,
+                HeadRef = pullRequestEvent.PullRequest.Head.Ref,
+                HeadSha = pullRequestEvent.PullRequest.Head.Sha,
+            };
 
             await _queue.EnqueueAsync(request, cancellationToken);
             _logger.LogInformation("Queued scan for {Owner}/{Repo} PR #{Pr}", request.Owner, request.Repo, request.PrNumber);

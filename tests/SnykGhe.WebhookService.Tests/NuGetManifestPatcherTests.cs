@@ -11,7 +11,19 @@ namespace SnykGhe.WebhookService.Tests
         public void Dispose() => Directory.Delete(_dir, recursive: true);
 
         private static FixPlan PlanFor(string package, string from, string to) =>
-            new() { Upgrades = [new PackageUpgrade(package, from, to, ["SNYK-1"])] };
+            new()
+            {
+                Upgrades =
+                [
+                    new PackageUpgrade
+                    {
+                        PackageName = package,
+                        FromVersion = from,
+                        ToVersion = to,
+                        VulnerabilityIds = ["SNYK-1"],
+                    },
+                ],
+            };
 
         [Fact]
         public void Apply_SdkStylePackageReferenceAttribute_BumpsVersion()

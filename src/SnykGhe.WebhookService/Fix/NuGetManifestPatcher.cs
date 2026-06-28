@@ -28,7 +28,7 @@ namespace SnykGhe.WebhookService.Fix
                 if (TryPatchFile(file, targets, out var newContent))
                 {
                     var relative = Path.GetRelativePath(workingDirectory, file).Replace('\\', '/');
-                    patched.Add(new PatchedFile(relative, newContent));
+                    patched.Add(new PatchedFile { RelativePath = relative, NewContent = newContent });
                 }
             }
 

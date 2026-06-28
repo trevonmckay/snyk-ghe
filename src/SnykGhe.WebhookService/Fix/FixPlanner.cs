@@ -60,7 +60,13 @@ namespace SnykGhe.WebhookService.Fix
             }
 
             var upgrades = aggregated
-                .Select(kvp => new PackageUpgrade(kvp.Key, kvp.Value.From, kvp.Value.ToRaw, kvp.Value.Vulns.ToList()))
+                .Select(kvp => new PackageUpgrade
+                {
+                    PackageName = kvp.Key,
+                    FromVersion = kvp.Value.From,
+                    ToVersion = kvp.Value.ToRaw,
+                    VulnerabilityIds = kvp.Value.Vulns.ToList(),
+                })
                 .OrderBy(u => u.PackageName, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
