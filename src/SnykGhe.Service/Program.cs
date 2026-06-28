@@ -1,3 +1,4 @@
+using Amazon.SQS;
 using Azure.Identity;
 using Azure.Messaging.ServiceBus;
 using Octokit.Webhooks;
@@ -28,6 +29,10 @@ builder.Services
     .AddOptions<ServiceBusOptions>()
     .Bind(builder.Configuration.GetSection(ServiceBusOptions.SectionName));
 
+builder.Services
+    .AddOptions<SqsOptions>()
+    .Bind(builder.Configuration.GetSection(SqsOptions.SectionName));
+
 var storageProvider = builder.Configuration
     .GetSection(StorageOptions.SectionName)
     .GetValue<StorageProvider>(nameof(StorageOptions.Provider));
@@ -52,10 +57,14 @@ builder.Services.AddSingleton<PullRequestCheckService>();
 builder.Services.AddSingleton<WebhookEventProcessor, GitHubWebhookEventProcessor>();
 builder.Services.AddSingleton<WebhookDispatcher>();
 
-// Durable webhook queue when Service Bus is configured; in-process channel otherwise (local dev).
+// Durable webhook queue: Service Bus on Azure, SQS on AWS; in-process channel otherwise (local dev).
 var serviceBusOptions = builder.Configuration
     .GetSection(ServiceBusOptions.SectionName)
     .Get<ServiceBusOptions>();
+
+var sqsOptions = builder.Configuration
+    .GetSection(SqsOptions.SectionName)
+    .Get<SqsOptions>();
 
 if (serviceBusOptions?.IsConfigured == true)
 {
@@ -64,6 +73,15 @@ if (serviceBusOptions?.IsConfigured == true)
         new DefaultAzureCredential()));
     builder.Services.AddSingleton<IWebhookQueue, ServiceBusWebhookQueue>();
     builder.Services.AddHostedService<ServiceBusWebhookWorker>();
+}
+else if (sqsOptions?.IsConfigured == true)
+{
+    builder.Services.AddSingleton<IAmazonSQS>(_ =>
+        string.IsNullOrWhiteSpace(sqsOptions.AwsRegion)
+            ? new AmazonSQSClient()
+            : new AmazonSQSClient(Amazon.RegionEndpoint.GetBySystemName(sqsOptions.AwsRegion)));
+    builder.Services.AddSingleton<IWebhookQueue, SqsWebhookQueue>();
+    builder.Services.AddHostedService<SqsWebhookWorker>();
 }
 else
 {
