@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!-- Domain + processing library. Uses ASP.NET Core abstractions (hosting, logging, options,
+       webhook processing), so it references the shared framework rather than juggling individual
+       Microsoft.Extensions.* package versions. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <!-- The Web SDK supplies these as implicit global usings; this library is a plain SDK project, so
+       declare the ones the moved code relies on (ILogger, BackgroundService/IHostedService, etc.). -->
+  <ItemGroup>
+    <Using Include="Microsoft.Extensions.Configuration" />
+    <Using Include="Microsoft.Extensions.DependencyInjection" />
+    <Using Include="Microsoft.Extensions.Hosting" />
+    <Using Include="Microsoft.Extensions.Logging" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AWSSDK.DynamoDBv2" Version="4.0.21.7" />
+    <PackageReference Include="Azure.Data.Tables" Version="12.11.0" />
+    <PackageReference Include="Azure.Identity" Version="1.21.0" />
+    <PackageReference Include="Azure.Messaging.ServiceBus" Version="7.20.1" />
+    <PackageReference Include="CliWrap" Version="3.10.2" />
+    <PackageReference Include="GitHubJwt" Version="0.0.6" />
+    <PackageReference Include="NuGet.Versioning" Version="7.6.0" />
+    <PackageReference Include="Octokit" Version="14.0.0" />
+    <PackageReference Include="Octokit.Webhooks.AspNetCore" Version="4.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SnykGhe.Contracts\SnykGhe.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

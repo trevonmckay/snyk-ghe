@@ -22,7 +22,7 @@ ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 REGION=$(aws configure get region)
 REPO="$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/snyk-ghe"
 aws ecr get-login-password | docker login --username AWS --password-stdin "$ACCOUNT.dkr.ecr.$REGION.amazonaws.com"
-docker build -t "$REPO:1.0.0" -f src/SnykGhe.WebhookService/Dockerfile .
+docker build -t "$REPO:1.0.0" -f src/SnykGhe.Service/Dockerfile .
 docker push "$REPO:1.0.0"
 
 # 2. Deploy the stack (secrets passed as parameters; keep them out of shell history where possible)

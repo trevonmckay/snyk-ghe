@@ -9,7 +9,8 @@ pluggable registry (Azure Table Storage or AWS DynamoDB).
 ## Layout
 
 - `SnykGhe.slnx` at the root; application projects in `src/`, test projects in `tests/`.
-- `.azure/` — Azure Bicep (`main.bicep`); `.aws/` — AWS CloudFormation (`main.yaml`).
+- `.azure/` — Azure Bicep: `main.bicep` (always-on Container App) and `main-functions.bicep`
+  (Azure Function front door + scale-to-zero processing); `.aws/` — AWS CloudFormation (`main.yaml`).
 
 ## Coding conventions (enforced)
 

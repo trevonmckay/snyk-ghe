@@ -16,6 +16,9 @@ appsettings.Local.json
 .env
 *.env
 
+## Azure Functions local settings (may contain secrets)
+local.settings.json
+
 ## Local Bicep params (may contain secrets)
 .azure/*.local.bicepparam
 

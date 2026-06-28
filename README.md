@@ -25,12 +25,16 @@ human user's Personal Access Token.
 ## Architecture
 
 ```
-GitHub App webhook ──▶ WebhooksController ──▶ scan queue ──▶ ScanWorker
-                                                              │
-                          OrgPolicyResolver ◀── registry ◀────┤  (per-org Snyk mapping + policy)
-                                                              ▼
+GitHub webhook ──▶ HTTP front door ──▶ webhook queue ──▶ worker ──▶ event processor
+                   (CA controller or    (Service Bus, or             │
+                    Azure Function)       in-proc channel locally)    │
+                          OrgPolicyResolver ◀── registry ◀────────────┤  (per-org Snyk mapping + policy)
+                                                                      ▼
                                           clone ▶ snyk test ▶ Check Run + comment ▶ fix PR
 ```
+
+The front door validates the `X-Hub-Signature-256` HMAC and enqueues the raw delivery, so GitHub is
+acknowledged well within its ~10s timeout; the worker runs the (slow) scan off the queue.
 
 - **.NET 10**, ASP.NET Core **controllers** (not minimal APIs).
 - The installation registry is pluggable: **Azure Table Storage** or **AWS DynamoDB**, selected by
@@ -91,7 +95,9 @@ host per installation.
 
 ## Deploy
 
-- **Azure:** `.azure/main.bicep` (Container Apps + Table Storage + Key Vault). See `.azure/README.md`.
+- **Azure:** two topologies, both Container Apps + Service Bus + Table Storage + Key Vault —
+  `.azure/main.bicep` (always-on) or `.azure/main-functions.bicep` (Azure Function front door, processing
+  scales to zero). See `.azure/README.md`.
 - **AWS:** `.aws/main.yaml` (App Runner + DynamoDB + Secrets Manager). See `.aws/README.md`.
 
 ## Build & test

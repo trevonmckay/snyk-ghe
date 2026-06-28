@@ -45,8 +45,11 @@ param snykToken string
 @description('API key protecting the admin mapping endpoint.')
 param adminApiKey string
 
-@description('Service Bus queue that buffers webhook deliveries between the receiver and the scan worker.')
+@description('Service Bus queue that buffers webhook deliveries between the Function and the scan worker.')
 param serviceBusQueueName string = 'webhook-deliveries'
+
+@description('dotnet-isolated runtime version for the Function. Must be a version Flex Consumption supports in your region.')
+param functionRuntimeVersion string = '10.0'
 
 var storageName = toLower('${baseName}stg')
 var acrName = toLower('${baseName}acr')
@@ -56,15 +59,22 @@ var lawName = '${baseName}-law'
 var envName = '${baseName}-cae'
 var appName = '${baseName}-app'
 var sbName = toLower('${baseName}-sb')
+var planName = '${baseName}-fcplan'
+var functionName = '${baseName}-fn'
+var aiName = '${baseName}-ai'
+var deploymentContainerName = 'app-package'
 
 // Built-in role definition ids
 var roleStorageTableDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
+var roleStorageBlobDataOwner = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')
+var roleStorageQueueDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
 var roleKeyVaultSecretsUser = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
 var roleKeyVaultSecretsOfficer = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
 var roleAcrPull = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
-// Azure Service Bus Data Owner — the app both sends (receiver) and receives (worker), and the KEDA
-// scaler reads the queue depth, all of which this role covers.
+// Azure Service Bus Data Owner — the Function sends, the Container App receives, and the KEDA scaler
+// reads queue depth; this one role covers all three for the shared identity.
 var roleServiceBusDataOwner = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '090c5cfd-751d-490a-894a-3ce6f1109419')
+var roleMonitoringMetricsPublisher = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '3913510d-42f4-4751-9f13-9ccb3af68d1f')
 
 resource uami 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: uamiName
@@ -77,6 +87,16 @@ resource law 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   properties: {
     sku: { name: 'PerGB2018' }
     retentionInDays: 30
+  }
+}
+
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: aiName
+  location: location
+  kind: 'web'
+  properties: {
+    Application_Type: 'web'
+    WorkspaceResourceId: law.id
   }
 }
 
@@ -95,6 +115,15 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
 
     resource table 'tables@2023-05-01' = {
       name: 'installations'
+    }
+  }
+
+  resource blobService 'blobServices@2023-05-01' = {
+    name: 'default'
+
+    // Flex Consumption pulls the app's deployment package from this blob container using the identity.
+    resource deploymentContainer 'containers@2023-05-01' = {
+      name: deploymentContainerName
     }
   }
 }
@@ -179,6 +208,28 @@ resource tableDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-0
   }
 }
 
+// The Flex Consumption host uses blobs (deployment package + leases) and queues (internal coordination)
+// on the storage account via the managed identity.
+resource blobDataOwner 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.id, uami.id, roleStorageBlobDataOwner)
+  scope: storage
+  properties: {
+    roleDefinitionId: roleStorageBlobDataOwner
+    principalId: uami.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource queueDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.id, uami.id, roleStorageQueueDataContributor)
+  scope: storage
+  properties: {
+    roleDefinitionId: roleStorageQueueDataContributor
+    principalId: uami.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 resource secretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(kv.id, uami.id, roleKeyVaultSecretsUser)
   scope: kv
@@ -218,6 +269,92 @@ resource serviceBusDataOwner 'Microsoft.Authorization/roleAssignments@2022-04-01
   }
 }
 
+resource metricsPublisher 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(appInsights.id, uami.id, roleMonitoringMetricsPublisher)
+  scope: appInsights
+  properties: {
+    roleDefinitionId: roleMonitoringMetricsPublisher
+    principalId: uami.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// --- Function front door (Flex Consumption) ---
+resource functionPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
+  name: planName
+  location: location
+  kind: 'functionapp'
+  sku: { tier: 'FlexConsumption', name: 'FC1' }
+  properties: {
+    reserved: true
+  }
+}
+
+resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
+  name: functionName
+  location: location
+  kind: 'functionapp,linux'
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${uami.id}': {}
+    }
+  }
+  properties: {
+    serverFarmId: functionPlan.id
+    httpsOnly: true
+    keyVaultReferenceIdentity: uami.id
+    siteConfig: {
+      minTlsVersion: '1.2'
+    }
+    functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: '${storage.properties.primaryEndpoints.blob}${deploymentContainerName}'
+          authentication: {
+            type: 'UserAssignedIdentity'
+            userAssignedIdentityResourceId: uami.id
+          }
+        }
+      }
+      scaleAndConcurrency: {
+        maximumInstanceCount: 40
+        instanceMemoryMB: 2048
+      }
+      runtime: {
+        name: 'dotnet-isolated'
+        version: functionRuntimeVersion
+      }
+    }
+  }
+
+  resource appsettings 'config@2024-04-01' = {
+    name: 'appsettings'
+    properties: {
+      AzureWebJobsStorage__accountName: storage.name
+      AzureWebJobsStorage__credential: 'managedidentity'
+      AzureWebJobsStorage__clientId: uami.properties.clientId
+      APPLICATIONINSIGHTS_CONNECTION_STRING: appInsights.properties.ConnectionString
+      APPLICATIONINSIGHTS_AUTHENTICATION_STRING: 'ClientId=${uami.properties.clientId};Authorization=AAD'
+      ServiceBusConnection__fullyQualifiedNamespace: '${serviceBus.name}.servicebus.windows.net'
+      ServiceBusConnection__credential: 'managedidentity'
+      ServiceBusConnection__clientId: uami.properties.clientId
+      ServiceBusQueueName: serviceBusQueueName
+      GitHubWebhookSecret: '@Microsoft.KeyVault(SecretUri=${kv.properties.vaultUri}secrets/github-webhook-secret)'
+    }
+  }
+
+  dependsOn: [
+    blobDataOwner
+    queueDataContributor
+    secretsUser
+    serviceBusDataOwner
+    secretWebhook
+  ]
+}
+
+// --- Processing tier (Container App, scales to zero) ---
 resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: envName
   location: location
@@ -244,12 +381,8 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
   properties: {
     managedEnvironmentId: env.id
     configuration: {
-      ingress: {
-        external: true
-        targetPort: 8080
-        transport: 'auto'
-        allowInsecure: false
-      }
+      // No ingress: the Function is the only public endpoint. The app wakes from zero on queue messages
+      // via the KEDA Service Bus scale rule below.
       registries: [
         {
           server: acr.properties.loginServer
@@ -260,11 +393,6 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
         {
           name: 'github-private-key'
           keyVaultUrl: '${kv.properties.vaultUri}secrets/github-app-private-key'
-          identity: uami.id
-        }
-        {
-          name: 'github-webhook-secret'
-          keyVaultUrl: '${kv.properties.vaultUri}secrets/github-webhook-secret'
           identity: uami.id
         }
         {
@@ -289,12 +417,11 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
             memory: '1Gi'
           }
           env: [
-            // DefaultAzureCredential selects this user-assigned identity for Storage + Key Vault.
+            // DefaultAzureCredential selects this user-assigned identity for Storage, Key Vault, and Service Bus.
             { name: 'AZURE_CLIENT_ID', value: uami.properties.clientId }
             { name: 'GitHub__ApiBaseUrl', value: gitHubApiBaseUrl }
             { name: 'GitHub__AppId', value: string(gitHubAppId) }
             { name: 'GitHub__PrivateKeyPem', secretRef: 'github-private-key' }
-            { name: 'GitHub__WebhookSecret', secretRef: 'github-webhook-secret' }
             { name: 'Snyk__Token', secretRef: 'snyk-token' }
             { name: 'Snyk__DefaultSnykOrgId', value: snykDefaultOrgId }
             { name: 'Snyk__DefaultSeverityThreshold', value: snykDefaultSeverity }
@@ -308,9 +435,9 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
         }
       ]
       scale: {
-        // Always-on: keep one warm replica so there is no cold start and webhooks are processed
-        // immediately. The Service Bus rule adds replicas when the queue backs up under load.
-        minReplicas: 1
+        // Scale to zero when idle; wake and scale out on queue depth. A scale rule is mandatory here
+        // because ingress is disabled — without it the app could never start back up from zero.
+        minReplicas: 0
         maxReplicas: 10
         rules: [
           {
@@ -334,13 +461,13 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
     acrPull
     serviceBusDataOwner
     secretPrivateKey
-    secretWebhook
     secretSnykToken
     secretAdminKey
   ]
 }
 
-output webhookUrl string = 'https://${app.properties.configuration.ingress.fqdn}/api/github/webhooks'
+output webhookUrl string = 'https://${functionApp.properties.defaultHostName}/api/github/webhooks'
+output functionAppName string = functionApp.name
 output acrLoginServer string = acr.properties.loginServer
 output keyVaultName string = kv.name
 output managedIdentityClientId string = uami.properties.clientId
