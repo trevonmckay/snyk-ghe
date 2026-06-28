@@ -2,6 +2,7 @@ using GitHubJwt;
 using Microsoft.Extensions.Options;
 using Octokit;
 using SnykGhe.Core.Configuration;
+using SnykGhe.Core.Storage;
 
 namespace SnykGhe.Core.GitHub
 {
@@ -22,10 +23,14 @@ namespace SnykGhe.Core.GitHub
     public sealed class GitHubClientFactory
     {
         private readonly GitHubOptions _options;
+        private readonly IAppConfigStore _appConfig;
+        private readonly SemaphoreSlim _appIdLock = new(1, 1);
+        private int _resolvedAppId;
 
-        public GitHubClientFactory(IOptions<GitHubOptions> options)
+        public GitHubClientFactory(IOptions<GitHubOptions> options, IAppConfigStore appConfig)
         {
             _options = options.Value;
+            _appConfig = appConfig;
         }
 
         private IPrivateKeySource CreateKeySource()
@@ -44,13 +49,51 @@ namespace SnykGhe.Core.GitHub
                 "No GitHub App private key configured. Set GitHub:PrivateKeyPem or GitHub:PrivateKeyPath.");
         }
 
-        private string CreateAppJwt()
+        /// <summary>
+        /// Resolves the App ID, preferring an explicit <c>GitHub:AppId</c> config value and otherwise the
+        /// value the registration flow persisted to the app-config store. A non-positive configured value
+        /// (e.g. the unset default) is treated as absent. Cached after the first successful resolution.
+        /// </summary>
+        private async Task<int> ResolveAppIdAsync(CancellationToken cancellationToken)
         {
-            if (!int.TryParse(_options.AppId, out int gitHubAppId))
+            if (_resolvedAppId > 0)
             {
-                throw new InvalidOperationException($"The given GitHub App Id '{_options.AppId}' is not valid.");
+                return _resolvedAppId;
             }
 
+            await _appIdLock.WaitAsync(cancellationToken);
+            try
+            {
+                if (_resolvedAppId > 0)
+                {
+                    return _resolvedAppId;
+                }
+
+                if (int.TryParse(_options.AppId, out var configured) && configured > 0)
+                {
+                    _resolvedAppId = configured;
+                    return _resolvedAppId;
+                }
+
+                var stored = await _appConfig.GetAppIdAsync(cancellationToken);
+                if (int.TryParse(stored, out var fromStore) && fromStore > 0)
+                {
+                    _resolvedAppId = fromStore;
+                    return _resolvedAppId;
+                }
+
+                throw new InvalidOperationException(
+                    "GitHub App ID is not configured (GitHub:AppId) and was not found in storage. " +
+                    "Register the App at /api/github/app/register.");
+            }
+            finally
+            {
+                _appIdLock.Release();
+            }
+        }
+
+        private string CreateAppJwt(int gitHubAppId)
+        {
             // GitHub caps App JWTs at 10 minutes; stay under it to allow for clock skew.
             var factory = new GitHubJwtFactory(
                 CreateKeySource(),
@@ -77,15 +120,17 @@ namespace SnykGhe.Core.GitHub
         }
 
         /// <summary>Client authenticated as the App itself (for App-level endpoints).</summary>
-        public GitHubClient CreateAppClient()
+        private GitHubClient CreateAppClient(int gitHubAppId)
         {
-            return CreateClient(new Credentials(CreateAppJwt(), AuthenticationType.Bearer));
+            return CreateClient(new Credentials(CreateAppJwt(gitHubAppId), AuthenticationType.Bearer));
         }
 
         /// <summary>Exchanges the App JWT for an installation token and returns a scoped client.</summary>
-        public async Task<InstallationCredentials> CreateInstallationClientAsync(long installationId)
+        public async Task<InstallationCredentials> CreateInstallationClientAsync(
+            long installationId, CancellationToken cancellationToken = default)
         {
-            var appClient = CreateAppClient();
+            var appId = await ResolveAppIdAsync(cancellationToken);
+            var appClient = CreateAppClient(appId);
             AccessToken token = await appClient.GitHubApps.CreateInstallationToken(installationId);
             return new InstallationCredentials { Client = CreateClient(new Credentials(token.Token)), Token = token.Token };
         }

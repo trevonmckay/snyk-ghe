@@ -59,7 +59,6 @@ var sbName = toLower('${baseName}-sb')
 
 // Built-in role definition ids
 var roleStorageTableDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
-var roleKeyVaultSecretsUser = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
 var roleKeyVaultSecretsOfficer = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
 var roleAcrPull = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
 // Azure Service Bus Data Owner — the app both sends (receiver) and receives (worker), and the KEDA
@@ -179,11 +178,13 @@ resource tableDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-0
   }
 }
 
-resource secretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(kv.id, uami.id, roleKeyVaultSecretsUser)
+// Secrets Officer (read + write) rather than Secrets User: the runtime identity reads the App secrets
+// and, during the self-service registration flow, writes the generated App credentials back to the vault.
+resource appSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(kv.id, uami.id, roleKeyVaultSecretsOfficer)
   scope: kv
   properties: {
-    roleDefinitionId: roleKeyVaultSecretsUser
+    roleDefinitionId: roleKeyVaultSecretsOfficer
     principalId: uami.properties.principalId
     principalType: 'ServicePrincipal'
   }
@@ -296,6 +297,9 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
             { name: 'GitHub__PrivateKeyPem', secretRef: 'github-private-key' }
             { name: 'GitHub__WebhookSecret', secretRef: 'github-webhook-secret' }
             { name: 'Snyk__Token', secretRef: 'snyk-token' }
+            // Lets the self-service registration flow write the generated private key + webhook secret back to Key Vault.
+            { name: 'SecretRepository__Provider', value: 'AzureKeyVault' }
+            { name: 'SecretRepository__KeyVaultUri', value: kv.properties.vaultUri }
             { name: 'Snyk__DefaultSnykOrgId', value: snykDefaultOrgId }
             { name: 'Snyk__DefaultSeverityThreshold', value: snykDefaultSeverity }
             { name: 'Snyk__DefaultEcosystem', value: snykDefaultEcosystem }
@@ -330,7 +334,7 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
     }
   }
   dependsOn: [
-    secretsUser
+    appSecretsOfficer
     acrPull
     serviceBusDataOwner
     secretPrivateKey

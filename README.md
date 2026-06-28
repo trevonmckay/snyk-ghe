@@ -86,6 +86,33 @@ org→installation registry as the App is installed, suspended, or removed — a
 GitHub App automatically. There is no checkbox for them and you cannot unsubscribe, so no action is
 needed beyond setting the webhook URL above.
 
+### Automated registration (optional)
+
+Instead of registering the App by hand, the service can generate it from a manifest so the permissions
+and events above are pre-filled. The permission/event set is defined once in code
+(`GitHubAppDefinition`) and mirrored by the table above.
+
+1. **`GET /api/github/app/register`** (gated by the admin key — `X-Admin-Key` header or `?key=`; add
+   `?org=<org>` to create it under an organization) renders a form that posts the manifest to your GitHub
+   host. Click through GitHub's confirmation page.
+2. GitHub redirects to **`GET /api/github/app/created`**, which exchanges the one-time code (valid one
+   hour), writes the generated **private key** and **webhook secret** to the configured secret
+   repository (`SecretRepository:Provider` = `AzureKeyVault` / `AwsSecretsManager`), and saves the
+   (public, non-secret) **App ID** to the installation store (Table / DynamoDB) so the service loads it
+   automatically — no manual `GitHub:AppId` step.
+3. **Restart** the service so it loads the new secrets, then install the App on your orgs. (An explicit
+   `GitHub:AppId` in config still wins if you prefer to set it.)
+
+After install, GitHub redirects the installer to the App's **Setup URL**, served by
+**`GET /api/github/setup`** — a confirmation page that shows the remaining step (mapping the org to a
+Snyk org).
+
+The deploy templates wire this up: the runtime identity is granted **write** to the secret store
+(Azure: Key Vault Secrets Officer; AWS: `secretsmanager:PutSecretValue`) and `SecretRepository:*` is
+preconfigured. These endpoints need public ingress, so they are available in the always-on Azure
+topology (`main.bicep`) and on AWS App Runner; the scale-to-zero topology's processing container has no
+ingress, so register via one of those (or by hand) there.
+
 ## Configuration
 
 All keys bind from `appsettings.json` / environment variables (double-underscore form, e.g.
@@ -99,7 +126,9 @@ All keys bind from `appsettings.json` / environment variables (double-underscore
 | `Snyk:Token` *or* `Snyk:OAuthClientId`/`Secret` | Snyk CLI authentication |
 | `Snyk:DefaultSnykOrgId` / `DefaultSeverityThreshold` / `DefaultEcosystem` | Fallback policy for unmapped orgs |
 | `Storage:Provider` | `AzureTable` or `DynamoDb` |
-| `Storage:AdminApiKey` | Guards the `PUT /api/admin/orgs/{org}` mapping endpoint (closed if unset) |
+| `Storage:AdminApiKey` | Guards the `PUT /api/admin/orgs/{org}` mapping endpoint and the registration flow (closed if unset) |
+| `SecretRepository:Provider` | `AzureKeyVault` / `AwsSecretsManager` / `None` — where the registration flow writes generated secrets |
+| `Registration:PublicBaseUrl` | This service's public URL used in the manifest (falls back to the request host) |
 
 Map a GitHub org to a Snyk org at runtime:
 

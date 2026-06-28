@@ -53,7 +53,7 @@ namespace SnykGhe.Core.Processing
                 request.Owner, request.Repo, request.PrNumber, request.HeadSha, policy.SnykOrgId ?? "(default)", policy.SeverityThreshold);
 
             var startedAt = DateTimeOffset.UtcNow;
-            var credentials = await _clientFactory.CreateInstallationClientAsync(request.InstallationId);
+            var credentials = await _clientFactory.CreateInstallationClientAsync(request.InstallationId, cancellationToken);
 
             var workDir = Path.Combine(Path.GetTempPath(), $"snyk-{request.Repo}-{request.PrNumber}-{Guid.NewGuid():N}");
             Directory.CreateDirectory(workDir);
