@@ -5,7 +5,7 @@ and share the same durable design — a Service Bus queue between webhook ingest
 scan — so installation registry, scanning, and fix-PR behaviour are identical. They differ only in who
 the public webhook endpoint is and whether the processing tier is always on.
 
-| | `main.bicep` — middle ground | `main-functions.bicep` — event-driven |
+| | `main.bicep` — always-on | `main-functions.bicep` — scale-to-zero |
 | --- | --- | --- |
 | Public endpoint | Container App (external ingress) | Azure Function (Flex Consumption) |
 | Queue | Azure Service Bus | Azure Service Bus |
@@ -14,7 +14,7 @@ the public webhook endpoint is and whether the processing tier is always on.
 | Cold start | none | hidden behind the queue — GitHub is ACKed by the always-cheap Function |
 | Extra moving parts | Service Bus | Service Bus, Function app, Flex plan, App Insights |
 
-Pick the middle ground for the simplest always-warm service; pick event-driven to minimise idle cost
+Pick always-on for the simplest always-warm service; pick scale-to-zero to minimise idle cost
 (bursty / low-volume traffic) at the cost of a few more resources.
 
 ## Shared resources
@@ -22,20 +22,20 @@ Pick the middle ground for the simplest always-warm service; pick event-driven t
 | Resource | Purpose |
 | --- | --- |
 | User-assigned managed identity | App identity for Storage, Key Vault, ACR, and Service Bus — no connection strings |
-| Log Analytics workspace | Diagnostics (and the App Insights workspace in the event-driven topology) |
+| Log Analytics workspace | Diagnostics (and the App Insights workspace in the scale-to-zero topology) |
 | Storage account + `installations` table | Installation registry |
 | Service Bus namespace + queue | Durable buffer between webhook ingestion and scanning (retry + dead-letter) |
 | Key Vault (RBAC) + secrets | GitHub App private key, webhook secret, Snyk token, admin key |
 | Container Registry (ACR) | Hosts the service image |
-| Container Apps environment + app | Runs the scan worker (and, in the middle ground, receives webhooks) |
+| Container Apps environment + app | Runs the scan worker (and, in the always-on topology, receives webhooks) |
 
 The managed identity is granted **Storage Table Data Contributor**, **Key Vault Secrets User**,
 **AcrPull**, and **Azure Service Bus Data Owner** (send + receive + the queue-depth read the KEDA scaler
-needs). The event-driven topology additionally grants the identity **Storage Blob Data Owner** (Function
+needs). The scale-to-zero topology additionally grants the identity **Storage Blob Data Owner** (Function
 host storage + deployment container) and **Monitoring Metrics Publisher** (App Insights). The deploying
 principal is granted **Key Vault Secrets Officer** so the template can write the secret values.
 
-## Deploy — middle ground (`main.bicep`)
+## Deploy — always-on (`main.bicep`)
 
 ```bash
 # 1. Resource group
@@ -59,7 +59,7 @@ az deployment group create \
 
 The deployment outputs `webhookUrl` — configure that as the GitHub App's webhook URL.
 
-## Deploy — event-driven (`main-functions.bicep`)
+## Deploy — scale-to-zero (`main-functions.bicep`)
 
 Same as above but with `-f .azure/main-functions.bicep -p .azure/main-functions.sample.bicepparam`.
 Then publish the Function code (the template provisions the Function app but not its code):

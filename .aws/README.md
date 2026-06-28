@@ -1,9 +1,8 @@
 # Infrastructure (AWS / CloudFormation)
 
-`main.yaml` provisions the full AWS footprint for the service, running on **App Runner**. This is the
-AWS counterpart to the Azure *middle ground* topology (`.azure/main.bicep`): one always-on compute tier
-with a durable queue between webhook ingestion and the slow Snyk scan, so a delivery is never lost if a
-scan crashes or the instance recycles.
+`main.yaml` provisions the full AWS footprint for the service, running on **App Runner**: one always-on
+compute tier with a durable SQS queue between webhook ingestion and the slow Snyk scan, so a delivery is
+never lost if a scan crashes or the instance recycles.
 
 | Resource | Purpose |
 | --- | --- |
@@ -63,4 +62,4 @@ aws cloudformation describe-stacks --stack-name snyk-ghe \
 - **Durability & retries:** a delivery is deleted from SQS only after it processes successfully. A failure leaves it on the queue, so SQS redelivers it after the visibility timeout and moves it to the dead-letter queue after `maxReceiveCount` (5) attempts — at-least-once processing with no silent loss. Inspect failures with `aws sqs receive-message --queue-url <WebhookDeadLetterQueueUrl>`.
 - **Visibility timeout:** both the queue and `Sqs__VisibilityTimeoutSeconds` default to 1800s. It must exceed the longest clone + scan; the scan itself is capped by `Snyk__ScanTimeoutSeconds` (600s), so 1800s leaves ample headroom.
 - **Secret rotation:** update a secret with `aws secretsmanager put-secret-value`; App Runner picks up the new value on the next deployment/restart.
-- **Local development:** with no `Sqs__QueueUrl` (and no `ServiceBus__FullyQualifiedNamespace`) the service falls back to an in-process channel queue — no SQS needed to run locally. That queue is **not durable** (queued work is lost on restart), so it is for local/dev only.
+- **Local development:** with no `Sqs__QueueUrl` the service falls back to an in-process channel queue — no SQS needed to run locally. That queue is **not durable** (queued work is lost on restart), so it is for local/dev only.

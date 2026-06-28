@@ -9,7 +9,7 @@ using SnykGhe.Contracts;
 namespace SnykGhe.Functions
 {
     /// <summary>
-    /// HTTP front door for the event-driven deployment topology. Validates the GitHub webhook signature
+    /// HTTP front door for the scale-to-zero deployment topology. Validates the GitHub webhook signature
     /// and forwards the raw delivery to Service Bus, where a Container App consumes and scans. Keeping
     /// this tier thin lets the (slow, expensive) processing tier scale to zero while GitHub still gets a
     /// sub-second acknowledgement.
