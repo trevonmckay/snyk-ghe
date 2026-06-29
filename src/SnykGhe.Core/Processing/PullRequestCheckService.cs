@@ -58,11 +58,28 @@ namespace SnykGhe.Core.Processing
             var startedAt = DateTimeOffset.UtcNow;
             var credentials = await _clientFactory.CreateInstallationClientAsync(request.InstallationId, cancellationToken);
 
+            // Products that will run this scan. Each gets a Check Run posted as in_progress up front (below) so
+            // the PR shows live progress while the worker scans, then is moved to completed once its result is in.
+            var products = new List<SnykProduct> { SnykProduct.OpenSource };
+            if (_snyk.ScanCode)
+            {
+                products.Add(SnykProduct.Code);
+            }
+            if (_snyk.ScanIac)
+            {
+                products.Add(SnykProduct.Iac);
+            }
+
+            var checkRunIds = new Dictionary<SnykProduct, long>();
+            var finalized = new HashSet<SnykProduct>();
+
             var workDir = Path.Combine(Path.GetTempPath(), $"snyk-{request.Repo}-{request.PrNumber}-{Guid.NewGuid():N}");
             Directory.CreateDirectory(workDir);
 
             try
             {
+                await StartChecksAsync(credentials.Client, request, products, startedAt, checkRunIds);
+
                 await CloneAsync(request, credentials.Token, workDir, cancellationToken);
 
                 // Open Source (always on). Its raw result also drives fix PRs, so keep it alongside the
@@ -99,15 +116,9 @@ namespace SnykGhe.Core.Processing
                            $"The Snyk {ProductLabel(result.Product)} scan was skipped — nothing to scan or the product is not enabled for this org.")
                         : BuildProductReport(result, policy);
 
-                    await credentials.Client.Check.Run.Create(request.Owner, request.Repo, new NewCheckRun(ProductCheckName(result.Product), request.HeadSha)
-                    {
-                        Status = CheckStatus.Completed,
-                        Conclusion = conclusion,
-                        StartedAt = startedAt,
-                        CompletedAt = DateTimeOffset.UtcNow,
-                        DetailsUrl = result.DetailsUrl,
-                        Output = new NewCheckRunOutput(title, summary),
-                    });
+                    await CompleteCheckAsync(credentials.Client, request, checkRunIds[result.Product],
+                        conclusion, title, summary, result.DetailsUrl, startedAt);
+                    finalized.Add(result.Product);
 
                     _logger.LogInformation("Reported {Conclusion} for Snyk {Product} on {Owner}/{Repo} PR #{Pr}",
                         conclusion, result.Product, request.Owner, request.Repo, request.PrNumber);
@@ -132,8 +143,79 @@ namespace SnykGhe.Core.Processing
             }
             finally
             {
+                // Resolve any check still in_progress — clone or a scan threw before it was completed. Without
+                // this a spinning check would remain on the PR and, if it is a required check, block the merge.
+                foreach (var (product, checkRunId) in checkRunIds)
+                {
+                    if (finalized.Contains(product))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        await CompleteCheckAsync(credentials.Client, request, checkRunId, CheckConclusion.Neutral,
+                            $"Snyk {ProductLabel(product)} scan could not complete",
+                            "⚠️ The scan did not finish due to an unexpected error.", null, startedAt);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Could not resolve in-progress {Product} check for {Owner}/{Repo} PR #{Pr}",
+                            product, request.Owner, request.Repo, request.PrNumber);
+                    }
+                }
+
                 TryDeleteDirectory(workDir);
             }
+        }
+
+        /// <summary>
+        /// Posts an in_progress Check Run for each product about to be scanned and records its id in
+        /// <paramref name="checkRunIds"/> so <see cref="CompleteCheckAsync"/> can later move it to completed.
+        /// The dictionary is filled as each check is created, so a mid-loop failure still leaves the
+        /// already-created checks tracked for the caller's finally block to resolve.
+        /// </summary>
+        private async Task StartChecksAsync(
+            GitHubClient client,
+            ScanRequest request,
+            IReadOnlyList<SnykProduct> products,
+            DateTimeOffset startedAt,
+            Dictionary<SnykProduct, long> checkRunIds)
+        {
+            foreach (var product in products)
+            {
+                var label = ProductLabel(product);
+                var created = await client.Check.Run.Create(request.Owner, request.Repo,
+                    new NewCheckRun(ProductCheckName(product), request.HeadSha)
+                    {
+                        Status = CheckStatus.InProgress,
+                        StartedAt = startedAt,
+                        Output = new NewCheckRunOutput($"Snyk {label} scan in progress", $"Running the Snyk {label} scan…"),
+                    });
+                checkRunIds[product] = created.Id;
+            }
+        }
+
+        /// <summary>Moves a previously posted in_progress Check Run to its terminal completed state.</summary>
+        private async Task CompleteCheckAsync(
+            GitHubClient client,
+            ScanRequest request,
+            long checkRunId,
+            CheckConclusion conclusion,
+            string title,
+            string summary,
+            string? detailsUrl,
+            DateTimeOffset startedAt)
+        {
+            await client.Check.Run.Update(request.Owner, request.Repo, checkRunId, new CheckRunUpdate
+            {
+                Status = CheckStatus.Completed,
+                Conclusion = conclusion,
+                StartedAt = startedAt,
+                CompletedAt = DateTimeOffset.UtcNow,
+                DetailsUrl = detailsUrl,
+                Output = new NewCheckRunOutput(title, summary),
+            });
         }
 
         private async Task CloneAsync(ScanRequest request, string token, string workDir, CancellationToken cancellationToken)
