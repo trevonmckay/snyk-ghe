@@ -23,8 +23,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Azure.Identity" Version="1.21.0" />
     <PackageReference Include="Azure.Messaging.ServiceBus" Version="7.20.1" />
-    <PackageReference Include="Microsoft.ApplicationInsights.WorkerService" Version="3.1.2" />
+    <!-- Must stay on the 2.x line: Microsoft.Azure.Functions.Worker.ApplicationInsights (2.x) binds against
+         Microsoft.ApplicationInsights 2.x. App Insights 3.x removed ITelemetryInitializer, which crashes the
+         isolated worker on startup (TypeLoadException -> SIGABRT). -->
+    <PackageReference Include="Microsoft.ApplicationInsights.WorkerService" Version="2.22.0" />
     <PackageReference Include="Microsoft.Azure.Functions.Worker" Version="2.52.0" />
     <PackageReference Include="Microsoft.Azure.Functions.Worker.ApplicationInsights" Version="2.51.0" />
     <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.Http" Version="3.3.0" />

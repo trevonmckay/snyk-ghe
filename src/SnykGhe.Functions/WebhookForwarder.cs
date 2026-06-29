@@ -16,17 +16,19 @@ namespace SnykGhe.Functions
     /// </summary>
     public sealed class WebhookForwarder
     {
+        private readonly ServiceBusSender _sender;
         private readonly FunctionOptions _options;
         private readonly ILogger<WebhookForwarder> _logger;
 
-        public WebhookForwarder(IOptions<FunctionOptions> options, ILogger<WebhookForwarder> logger)
+        public WebhookForwarder(ServiceBusSender sender, IOptions<FunctionOptions> options, ILogger<WebhookForwarder> logger)
         {
+            _sender = sender;
             _options = options.Value;
             _logger = logger;
         }
 
         [Function("WebhookForwarder")]
-        public async Task<ForwardResult> Run(
+        public async Task<HttpResponseData> Run(
             [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "github/webhooks")] HttpRequestData request)
         {
             using var buffer = new MemoryStream();
@@ -37,15 +39,18 @@ namespace SnykGhe.Functions
             if (!GitHubWebhookSignatureValidator.IsValid(_options.WebhookSecret, bodyBytes, signature))
             {
                 _logger.LogWarning("Rejected webhook delivery with invalid signature.");
-                return new ForwardResult { HttpResponse = request.CreateResponse(HttpStatusCode.Unauthorized) };
+                return request.CreateResponse(HttpStatusCode.Unauthorized);
             }
 
             var eventName = GetHeader(request, "X-GitHub-Event");
             if (string.IsNullOrEmpty(eventName))
             {
-                return new ForwardResult { HttpResponse = request.CreateResponse(HttpStatusCode.BadRequest) };
+                return request.CreateResponse(HttpStatusCode.BadRequest);
             }
 
+            // Carry the routing headers as Service Bus application properties (not in the body, which stays
+            // the raw GitHub payload the consumer re-parses). Matches GitHubWebhookMessageProperties so the
+            // Container App's ServiceBusWebhookWorker reads them back.
             var message = new ServiceBusMessage(BinaryData.FromBytes(bodyBytes))
             {
                 ContentType = "application/json",
@@ -56,29 +61,17 @@ namespace SnykGhe.Functions
             if (!string.IsNullOrEmpty(deliveryId))
             {
                 message.ApplicationProperties[GitHubWebhookMessageProperties.DeliveryId] = deliveryId;
+                // GitHub redelivers with the same delivery id; surfacing it as the message id enables
+                // Service Bus duplicate detection when the queue has it enabled.
                 message.MessageId = deliveryId;
             }
 
-            return new ForwardResult
-            {
-                Message = message,
-                HttpResponse = request.CreateResponse(HttpStatusCode.OK),
-            };
+            await _sender.SendMessageAsync(message);
+
+            return request.CreateResponse(HttpStatusCode.OK);
         }
 
         private static string? GetHeader(HttpRequestData request, string name) =>
             request.Headers.TryGetValues(name, out var values) ? values.FirstOrDefault() : null;
-    }
-
-    /// <summary>
-    /// Multi-output result: the Service Bus message (omitted when null, e.g. for rejected deliveries)
-    /// plus the HTTP response returned to GitHub.
-    /// </summary>
-    public sealed class ForwardResult
-    {
-        [ServiceBusOutput("%ServiceBusQueueName%", Connection = "ServiceBusConnection")]
-        public ServiceBusMessage? Message { get; set; }
-
-        public HttpResponseData HttpResponse { get; set; } = default!;
     }
 }
