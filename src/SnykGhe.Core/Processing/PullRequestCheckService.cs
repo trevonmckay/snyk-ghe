@@ -71,10 +71,7 @@ namespace SnykGhe.Core.Processing
                 string? openSourceUrl = null;
                 if (!openSourceScan.Failed)
                 {
-                    var repoUrl = request.CloneUrl.EndsWith(".git", StringComparison.OrdinalIgnoreCase)
-                        ? request.CloneUrl[..^4]
-                        : request.CloneUrl;
-                    openSourceUrl = await _scanner.MonitorAsync(workDir, policy, repoUrl, request.HeadRef, cancellationToken);
+                    openSourceUrl = await _scanner.MonitorAsync(workDir, policy, request.RemoteRepoUrl, request.HeadRef, cancellationToken);
                 }
 
                 var results = new List<ProductScanResult> { ToProductResult(openSourceScan, openSourceUrl) };
@@ -83,12 +80,12 @@ namespace SnykGhe.Core.Processing
 
                 if (_snyk.ScanCode)
                 {
-                    results.Add(await _scanner.ScanCodeAsync(workDir, policy, _snyk.Monitor, projectName, request.HeadRef, cancellationToken));
+                    results.Add(await _scanner.ScanCodeAsync(workDir, policy, _snyk.Monitor, projectName, request.RemoteRepoUrl, request.HeadRef, cancellationToken));
                 }
 
                 if (_snyk.ScanIac)
                 {
-                    results.Add(await _scanner.ScanIacAsync(workDir, policy, _snyk.Monitor, projectName, request.HeadRef, cancellationToken));
+                    results.Add(await _scanner.ScanIacAsync(workDir, policy, _snyk.Monitor, projectName, request.RemoteRepoUrl, request.HeadRef, cancellationToken));
                 }
 
                 // One Check Run per enabled product. A not-applicable product (nothing to scan / not enabled)

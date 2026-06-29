@@ -177,6 +177,7 @@ namespace SnykGhe.Core.Snyk
             ResolvedPolicy policy,
             bool publish,
             string projectName,
+            string remoteRepoUrl,
             string targetReference,
             CancellationToken cancellationToken)
         {
@@ -193,6 +194,12 @@ namespace SnykGhe.Core.Snyk
                 // `snyk code test --report` requires an explicit project name (it is not auto-derived).
                 args.Add("--report");
                 args.Add($"--project-name={projectName}");
+                // Without an explicit remote-repo-url, --report attaches to the target auto-detected from the
+                // clone's git remote, whose URL ends in .git — surfacing as a confusing owner/repo.git target.
+                if (!string.IsNullOrWhiteSpace(remoteRepoUrl))
+                {
+                    args.Add($"--remote-repo-url={remoteRepoUrl}");
+                }
                 if (!string.IsNullOrWhiteSpace(targetReference))
                 {
                     args.Add($"--target-reference={targetReference}");
@@ -212,6 +219,7 @@ namespace SnykGhe.Core.Snyk
             ResolvedPolicy policy,
             bool publish,
             string projectName,
+            string remoteRepoUrl,
             string targetReference,
             CancellationToken cancellationToken)
         {
@@ -228,6 +236,11 @@ namespace SnykGhe.Core.Snyk
                 // `snyk iac test --report` needs a target name to attach the snapshot to.
                 args.Add("--report");
                 args.Add($"--target-name={projectName}");
+                // Group under the same target as the other products rather than a git-detected owner/repo.git.
+                if (!string.IsNullOrWhiteSpace(remoteRepoUrl))
+                {
+                    args.Add($"--remote-repo-url={remoteRepoUrl}");
+                }
                 if (!string.IsNullOrWhiteSpace(targetReference))
                 {
                     args.Add($"--target-reference={targetReference}");

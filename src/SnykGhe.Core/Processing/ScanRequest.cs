@@ -16,5 +16,13 @@ namespace SnykGhe.Core.Processing
         public required string HeadRef { get; init; }
 
         public required string HeadSha { get; init; }
+
+        /// <summary>
+        /// The clone URL with any trailing <c>.git</c> removed, for Snyk's <c>--remote-repo-url</c>. Snyk uses
+        /// this value verbatim as the target name, so a <c>.git</c> suffix surfaces as a confusing
+        /// <c>owner/repo.git</c> target in the UI — distinct from the <c>owner/repo</c> target other tools create.
+        /// </summary>
+        public string RemoteRepoUrl =>
+            CloneUrl.EndsWith(".git", StringComparison.OrdinalIgnoreCase) ? CloneUrl[..^4] : CloneUrl;
     }
 }
