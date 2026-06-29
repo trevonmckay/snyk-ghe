@@ -56,19 +56,24 @@ namespace SnykGhe.Core.GitHub.Manifest
                 : new Uri($"{WebBaseUrl}/organizations/{Uri.EscapeDataString(org)}/settings/apps/new?state={encodedState}");
         }
 
-        public GitHubAppManifest BuildManifest(string appName, string publicBaseUrl)
+        public GitHubAppManifest BuildManifest(string appName, string publicBaseUrl, string? webhookUrl = null)
         {
             var baseUrl = publicBaseUrl.TrimEnd('/');
+            var hookUrl = string.IsNullOrWhiteSpace(webhookUrl)
+                ? $"{baseUrl}/api/github/webhooks"
+                : webhookUrl.Trim();
             return new GitHubAppManifest
             {
                 Name = appName,
                 Url = baseUrl,
                 Description = "Posts Snyk security results (PR checks, comments, fix PRs) under a bot identity.",
-                HookAttributes = new GitHubAppHookAttributes { Url = $"{baseUrl}/api/github/webhooks", Active = true },
+                HookAttributes = new GitHubAppHookAttributes { Url = hookUrl, Active = true },
                 RedirectUrl = $"{baseUrl}/api/github/app/created",
                 SetupUrl = $"{baseUrl}/api/github/setup",
                 SetupOnUpdate = true,
-                Public = false,
+                // The app serves many orgs, so it must be public: a private GitHub App can only be installed
+                // on the account that owns it. EMU enterprises also reject a private app outright.
+                Public = true,
                 DefaultPermissions = GitHubAppDefinition.Permissions,
                 DefaultEvents = GitHubAppDefinition.Events,
             };

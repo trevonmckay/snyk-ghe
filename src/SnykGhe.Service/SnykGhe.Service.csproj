@@ -10,4 +10,8 @@
     <ProjectReference Include="..\SnykGhe.Core\SnykGhe.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Azure.Extensions.AspNetCore.Configuration.Secrets" Version="1.5.1" />
+  </ItemGroup>
+
 </Project>

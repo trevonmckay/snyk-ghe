@@ -22,7 +22,11 @@ namespace SnykGhe.Core.GitHub.Manifest
         /// <summary>
         /// Webhook events the App subscribes to. The installation / installation_repositories events are
         /// delivered to every GitHub App automatically and cannot be listed here.
+        /// <list type="bullet">
+        /// <item><c>pull_request</c> — scan on opened / synchronize / reopened / ready_for_review; draft PRs are skipped.</item>
+        /// <item><c>check_run</c> — re-scan when a user clicks "Re-run" on the Snyk check (rerequested).</item>
+        /// </list>
         /// </summary>
-        public static readonly IReadOnlyList<string> Events = new[] { "pull_request" };
+        public static readonly IReadOnlyList<string> Events = new[] { "pull_request", "check_run" };
     }
 }

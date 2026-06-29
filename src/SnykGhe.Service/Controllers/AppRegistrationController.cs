@@ -64,7 +64,7 @@ namespace SnykGhe.Service.Controllers
             try
             {
                 var state = _state.Issue();
-                var manifest = _manifest.BuildManifest(_registration.AppName, ResolvePublicBaseUrl());
+                var manifest = _manifest.BuildManifest(_registration.AppName, ResolvePublicBaseUrl(), _registration.WebhookUrl);
                 var target = _manifest.NewAppUrl(org, state);
                 var json = JsonSerializer.Serialize(manifest, ManifestJson);
                 return Content(RenderRegisterPage(target, json), "text/html; charset=utf-8");

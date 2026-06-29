@@ -47,25 +47,36 @@ namespace SnykGhe.Core.Storage
 
         public async Task SetMappingAsync(string gitHubOrg, string snykOrgId, string? severityThreshold, string? ecosystem, CancellationToken cancellationToken)
         {
-            var entity = new GitHubInstallationRecordEntity
+            // A typed entity would serialize its value-type properties (InstallationId, AccountId, Suspended)
+            // as 0 / false even when unset, and Merge would overwrite the seeded GitHub values. Write a
+            // partial entity carrying only the mapping properties so Merge leaves everything else intact.
+            var entity = new TableEntity(GitHubInstallationRecordEntity.Partition, Normalize(gitHubOrg))
             {
-                RowKey = Normalize(gitHubOrg),
-                GitHubOrg = gitHubOrg,
-                SnykOrgId = snykOrgId,
-                SeverityThreshold = severityThreshold,
-                Ecosystem = ecosystem,
+                ["GitHubOrg"] = gitHubOrg,
+                ["SnykOrgId"] = snykOrgId,
             };
+
+            if (!string.IsNullOrWhiteSpace(severityThreshold))
+            {
+                entity["SeverityThreshold"] = severityThreshold;
+            }
+
+            if (!string.IsNullOrWhiteSpace(ecosystem))
+            {
+                entity["Ecosystem"] = ecosystem;
+            }
 
             await _table.UpsertEntityAsync(entity, TableUpdateMode.Merge, cancellationToken);
         }
 
         public async Task SetSuspendedAsync(string gitHubOrg, bool suspended, CancellationToken cancellationToken)
         {
-            var entity = new GitHubInstallationRecordEntity
+            // Partial entity (see SetMappingAsync) — only Suspended is written, so Merge leaves the seeded
+            // GitHub install fields untouched.
+            var entity = new TableEntity(GitHubInstallationRecordEntity.Partition, Normalize(gitHubOrg))
             {
-                RowKey = Normalize(gitHubOrg),
-                GitHubOrg = gitHubOrg,
-                Suspended = suspended,
+                ["GitHubOrg"] = gitHubOrg,
+                ["Suspended"] = suspended,
             };
 
             await _table.UpsertEntityAsync(entity, TableUpdateMode.Merge, cancellationToken);
