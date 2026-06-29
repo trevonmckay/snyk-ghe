@@ -11,6 +11,8 @@ namespace SnykGhe.Core.Snyk
     /// </summary>
     public sealed class SnykScanner
     {
+        private const string NuGetEcosystem = "nuget";
+
         private readonly SnykOptions _options;
         private readonly SnykOAuthTokenProvider _oauthTokenProvider;
         private readonly ILogger _logger;
@@ -47,6 +49,7 @@ namespace SnykGhe.Core.Snyk
             // summary shows the full breakdown. Passing --severity-threshold would drop lower-severity issues
             // from the JSON, under-reporting counts relative to the monitor snapshot the check links to.
             var args = new List<string> { "test", "--json", "--all-projects" };
+            AddNuGetNamingArgs(args, policy);
 
             if (!string.IsNullOrWhiteSpace(policy.SnykOrgId))
             {
@@ -120,6 +123,7 @@ namespace SnykGhe.Core.Snyk
             }
 
             var args = new List<string> { "monitor", "--json", "--all-projects" };
+            AddNuGetNamingArgs(args, policy);
 
             if (!string.IsNullOrWhiteSpace(policy.SnykOrgId))
             {
@@ -231,6 +235,23 @@ namespace SnykGhe.Core.Snyk
             }
 
             return await RunProductScanAsync(SnykProduct.Iac, args, workingDirectory, oauthToken, SnykIacResult.Parse, cancellationToken);
+        }
+
+        private static bool IsNuGet(string ecosystem) =>
+            ecosystem.Equals(NuGetEcosystem, StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// For .NET projects, names each monitored Snyk project after the name inside its
+        /// <c>project.assets.json</c> rather than the (identical) target-file path. Without this, every project
+        /// in a multi-project solution shows up as <c>.../project.assets.json</c> and is indistinguishable in
+        /// the UI. No-op for non-NuGet ecosystems, where the flag does not apply.
+        /// </summary>
+        private static void AddNuGetNamingArgs(List<string> args, ResolvedPolicy policy)
+        {
+            if (IsNuGet(policy.Ecosystem))
+            {
+                args.Add("--assets-project-name");
+            }
         }
 
         private static void AddCommonArgs(List<string> args, ResolvedPolicy policy)
