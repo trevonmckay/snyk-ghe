@@ -12,11 +12,13 @@ namespace SnykGhe.Core.Snyk
     public sealed class SnykScanner
     {
         private readonly SnykOptions _options;
+        private readonly SnykOAuthTokenProvider _oauthTokenProvider;
         private readonly ILogger _logger;
 
-        public SnykScanner(IOptions<SnykOptions> options, ILogger<SnykScanner> logger)
+        public SnykScanner(IOptions<SnykOptions> options, SnykOAuthTokenProvider oauthTokenProvider, ILogger<SnykScanner> logger)
         {
             _options = options.Value;
+            _oauthTokenProvider = oauthTokenProvider;
             _logger = logger;
         }
 
@@ -27,12 +29,24 @@ namespace SnykGhe.Core.Snyk
         {
             await RestoreDependenciesAsync(workingDirectory, policy.Ecosystem, cancellationToken);
 
-            var args = new List<string> { "test", "--json", "--all-projects" };
-
-            if (!string.IsNullOrWhiteSpace(policy.SeverityThreshold))
+            string? oauthToken = null;
+            if (_oauthTokenProvider.IsConfigured)
             {
-                args.Add($"--severity-threshold={policy.SeverityThreshold}");
+                try
+                {
+                    oauthToken = await _oauthTokenProvider.GetAccessTokenAsync(cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Could not obtain a Snyk OAuth access token; scan cannot authenticate.");
+                    return new SnykScanResult { Projects = [], Failed = true, FailureMessage = "Snyk OAuth authentication failed." };
+                }
             }
+
+            // Report every severity; the gate threshold is applied in our own code (CountAtOrAbove) so the
+            // summary shows the full breakdown. Passing --severity-threshold would drop lower-severity issues
+            // from the JSON, under-reporting counts relative to the monitor snapshot the check links to.
+            var args = new List<string> { "test", "--json", "--all-projects" };
 
             if (!string.IsNullOrWhiteSpace(policy.SnykOrgId))
             {
@@ -48,7 +62,7 @@ namespace SnykGhe.Core.Snyk
                 result = await Cli.Wrap(_options.CliPath)
                     .WithArguments(args)
                     .WithWorkingDirectory(workingDirectory)
-                    .WithEnvironmentVariables(BuildEnvironment())
+                    .WithEnvironmentVariables(BuildEnvironment(oauthToken))
                     // Snyk exits 1 when vulnerabilities are found — that is a successful scan, not a failure.
                     .WithValidation(CommandResultValidation.None)
                     .ExecuteBufferedAsync(timeout.Token);
@@ -70,6 +84,269 @@ namespace SnykGhe.Core.Snyk
             }
 
             return SnykScanResult.Parse(result.StandardOutput);
+        }
+
+        /// <summary>
+        /// Persists the scan to the Snyk Web UI with <c>snyk monitor</c> and returns the snapshot URL the
+        /// Check Run links to, or null when monitoring is disabled or the CLI produced no usable URL. A
+        /// monitor failure is non-fatal: the gating test result already drives the check, so this only costs
+        /// the deep link. Must run after <see cref="ScanAsync"/> in the same directory — it relies on the
+        /// dependency restore that scan performed and does not repeat it.
+        /// </summary>
+        public async Task<string?> MonitorAsync(
+            string workingDirectory,
+            ResolvedPolicy policy,
+            string remoteRepoUrl,
+            string targetReference,
+            CancellationToken cancellationToken)
+        {
+            if (!_options.Monitor)
+            {
+                return null;
+            }
+
+            string? oauthToken = null;
+            if (_oauthTokenProvider.IsConfigured)
+            {
+                try
+                {
+                    oauthToken = await _oauthTokenProvider.GetAccessTokenAsync(cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not obtain a Snyk OAuth token for monitor; check will have no Snyk link.");
+                    return null;
+                }
+            }
+
+            var args = new List<string> { "monitor", "--json", "--all-projects" };
+
+            if (!string.IsNullOrWhiteSpace(policy.SnykOrgId))
+            {
+                args.Add($"--org={policy.SnykOrgId}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(remoteRepoUrl))
+            {
+                args.Add($"--remote-repo-url={remoteRepoUrl}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(targetReference))
+            {
+                args.Add($"--target-reference={targetReference}");
+            }
+
+            BufferedCommandResult result;
+            try
+            {
+                result = await Cli.Wrap(_options.CliPath)
+                    .WithArguments(args)
+                    .WithWorkingDirectory(workingDirectory)
+                    .WithEnvironmentVariables(BuildEnvironment(oauthToken))
+                    .WithValidation(CommandResultValidation.None)
+                    .ExecuteBufferedAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Snyk monitor failed in {Dir}; check will have no Snyk link.", workingDirectory);
+                return null;
+            }
+
+            // A non-zero exit still prints uris for the manifests that did monitor, so parse regardless.
+            if (result.ExitCode != 0)
+            {
+                _logger.LogWarning("Snyk monitor exited {Code} in {Dir}: {Error}",
+                    result.ExitCode, workingDirectory, result.StandardError.Trim());
+            }
+
+            return SnykMonitorResult.FirstUri(result.StandardOutput);
+        }
+
+        /// <summary>
+        /// Runs <c>snyk code test</c> (SAST) and returns a normalized result for the Code Check Run.
+        /// Reports the snapshot to the Snyk Web UI with <c>--report</c> when <paramref name="publish"/> is set.
+        /// A repo with no scannable source, or an org without the Snyk Code entitlement, yields a
+        /// not-applicable result so no Check Run is posted (rather than a failure).
+        /// </summary>
+        public async Task<ProductScanResult> ScanCodeAsync(
+            string workingDirectory,
+            ResolvedPolicy policy,
+            bool publish,
+            string projectName,
+            string targetReference,
+            CancellationToken cancellationToken)
+        {
+            var (ok, oauthToken) = await ResolveOAuthTokenAsync(cancellationToken);
+            if (!ok)
+            {
+                return ProductScanResult.Fail(SnykProduct.Code, "Snyk OAuth authentication failed.");
+            }
+
+            var args = new List<string> { "code", "test", "--json" };
+            AddCommonArgs(args, policy);
+            if (publish)
+            {
+                // `snyk code test --report` requires an explicit project name (it is not auto-derived).
+                args.Add("--report");
+                args.Add($"--project-name={projectName}");
+                if (!string.IsNullOrWhiteSpace(targetReference))
+                {
+                    args.Add($"--target-reference={targetReference}");
+                }
+            }
+
+            return await RunProductScanAsync(SnykProduct.Code, args, workingDirectory, oauthToken, SnykCodeResult.Parse, cancellationToken);
+        }
+
+        /// <summary>
+        /// Runs <c>snyk iac test</c> and returns a normalized result for the IaC Check Run. Reports to the
+        /// Snyk Web UI with <c>--report</c> when <paramref name="publish"/> is set. A repo with no IaC files
+        /// yields a not-applicable result so no Check Run is posted.
+        /// </summary>
+        public async Task<ProductScanResult> ScanIacAsync(
+            string workingDirectory,
+            ResolvedPolicy policy,
+            bool publish,
+            string projectName,
+            string targetReference,
+            CancellationToken cancellationToken)
+        {
+            var (ok, oauthToken) = await ResolveOAuthTokenAsync(cancellationToken);
+            if (!ok)
+            {
+                return ProductScanResult.Fail(SnykProduct.Iac, "Snyk OAuth authentication failed.");
+            }
+
+            var args = new List<string> { "iac", "test", "--json" };
+            AddCommonArgs(args, policy);
+            if (publish)
+            {
+                // `snyk iac test --report` needs a target name to attach the snapshot to.
+                args.Add("--report");
+                args.Add($"--target-name={projectName}");
+                if (!string.IsNullOrWhiteSpace(targetReference))
+                {
+                    args.Add($"--target-reference={targetReference}");
+                }
+            }
+
+            return await RunProductScanAsync(SnykProduct.Iac, args, workingDirectory, oauthToken, SnykIacResult.Parse, cancellationToken);
+        }
+
+        private static void AddCommonArgs(List<string> args, ResolvedPolicy policy)
+        {
+            // No --severity-threshold: report every severity and gate in our own code, so the summary breakdown
+            // matches what Snyk records rather than being pre-filtered to the gate level.
+            if (!string.IsNullOrWhiteSpace(policy.SnykOrgId))
+            {
+                args.Add($"--org={policy.SnykOrgId}");
+            }
+        }
+
+        private async Task<(bool Ok, string? Token)> ResolveOAuthTokenAsync(CancellationToken cancellationToken)
+        {
+            if (!_oauthTokenProvider.IsConfigured)
+            {
+                return (true, null);
+            }
+
+            try
+            {
+                return (true, await _oauthTokenProvider.GetAccessTokenAsync(cancellationToken));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Could not obtain a Snyk OAuth access token; scan cannot authenticate.");
+                return (false, null);
+            }
+        }
+
+        private async Task<ProductScanResult> RunProductScanAsync(
+            SnykProduct product,
+            List<string> args,
+            string workingDirectory,
+            string? oauthToken,
+            Func<string, ProductScanResult> parse,
+            CancellationToken cancellationToken)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(_options.ScanTimeoutSeconds));
+
+            BufferedCommandResult result;
+            try
+            {
+                result = await Cli.Wrap(_options.CliPath)
+                    .WithArguments(args)
+                    .WithWorkingDirectory(workingDirectory)
+                    .WithEnvironmentVariables(BuildEnvironment(oauthToken))
+                    .WithValidation(CommandResultValidation.None)
+                    .ExecuteBufferedAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning("Snyk {Product} scan timed out after {Seconds}s in {Dir}", product, _options.ScanTimeoutSeconds, workingDirectory);
+                return ProductScanResult.Fail(product, $"Snyk {product} scan timed out.");
+            }
+
+            // Exit codes: 0 = no issues, 1 = issues found, 2 = CLI/usage error, 3 = no supported files.
+            if (result.ExitCode == 3)
+            {
+                _logger.LogInformation("Snyk {Product}: no scannable files in {Dir}; skipping its check.", product, workingDirectory);
+                return ProductScanResult.Skip(product);
+            }
+
+            if (result.ExitCode >= 2)
+            {
+                // Snyk emits errors on stderr for some products and as JSON on stdout for others.
+                var detail = string.IsNullOrWhiteSpace(result.StandardError) ? result.StandardOutput : result.StandardError;
+
+                if (LooksNotEnabled(detail) || LooksNoScanTarget(detail))
+                {
+                    _logger.LogInformation("Snyk {Product} not applicable (not enabled / nothing to scan); skipping its check. {Detail}",
+                        product, detail.Trim());
+                    return ProductScanResult.Skip(product);
+                }
+
+                var message = string.IsNullOrWhiteSpace(detail)
+                    ? $"Snyk {product} CLI exited with code {result.ExitCode}."
+                    : detail.Trim();
+                _logger.LogWarning("Snyk {Product} CLI error (exit {Code}): {Error}", product, result.ExitCode, message);
+                return ProductScanResult.Fail(product, message);
+            }
+
+            return parse(result.StandardOutput);
+        }
+
+        private static bool LooksNotEnabled(string? stderr)
+        {
+            if (string.IsNullOrWhiteSpace(stderr))
+            {
+                return false;
+            }
+
+            var text = stderr.ToLowerInvariant();
+            return text.Contains("not enabled")
+                || text.Contains("not authorized")
+                || text.Contains("is not supported")
+                || text.Contains("not entitled")
+                || text.Contains("snyk code is not");
+        }
+
+        private static bool LooksNoScanTarget(string? output)
+        {
+            if (string.IsNullOrWhiteSpace(output))
+            {
+                return false;
+            }
+
+            var text = output.ToLowerInvariant();
+            return text.Contains("could not find any")
+                || text.Contains("no iac files")
+                || text.Contains("no supported files")
+                || text.Contains("not found any supported")
+                // Snyk IaC treats every .json/.yaml as candidate IaC and aborts on incidental non-IaC files
+                // (tsconfig, package.json, …). In a repo with no real IaC that is "nothing to scan", not a failure.
+                || text.Contains("failed to parse");
         }
 
         /// <summary>
@@ -110,7 +387,7 @@ namespace SnykGhe.Core.Snyk
             }
         }
 
-        private IReadOnlyDictionary<string, string?> BuildEnvironment()
+        private IReadOnlyDictionary<string, string?> BuildEnvironment(string? oauthToken)
         {
             var env = new Dictionary<string, string?>();
 
@@ -119,12 +396,11 @@ namespace SnykGhe.Core.Snyk
                 env["SNYK_TOKEN"] = _options.Token;
             }
 
-            // OAuth 2.0 client-credentials service account (hardening over a static token).
-            if (!string.IsNullOrWhiteSpace(_options.OAuthClientId) &&
-                !string.IsNullOrWhiteSpace(_options.OAuthClientSecret))
+            // OAuth 2.0 client-credentials service account (hardening over a static token). The CLI takes the
+            // already-exchanged access token via SNYK_OAUTH_TOKEN — it has no env var for client id/secret.
+            if (!string.IsNullOrWhiteSpace(oauthToken))
             {
-                env["SNYK_OAUTH_CLIENT_ID"] = _options.OAuthClientId;
-                env["SNYK_OAUTH_CLIENT_SECRET"] = _options.OAuthClientSecret;
+                env["SNYK_OAUTH_TOKEN"] = oauthToken;
             }
 
             return env;

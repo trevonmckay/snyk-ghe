@@ -9,6 +9,10 @@ namespace SnykGhe.Core.Snyk
         [JsonPropertyName("id")] public string Id { get; set; } = string.Empty;
         [JsonPropertyName("title")] public string Title { get; set; } = string.Empty;
         [JsonPropertyName("severity")] public string Severity { get; set; } = string.Empty;
+
+        /// <summary>"vuln" for a security vulnerability, "license" for a license-policy issue.</summary>
+        [JsonPropertyName("type")] public string? Type { get; set; }
+
         [JsonPropertyName("packageName")] public string PackageName { get; set; } = string.Empty;
         [JsonPropertyName("version")] public string Version { get; set; } = string.Empty;
         [JsonPropertyName("isUpgradable")] public bool IsUpgradable { get; set; }
@@ -73,6 +77,41 @@ namespace SnykGhe.Core.Snyk
             catch (JsonException ex)
             {
                 return new SnykScanResult { Projects = [], Failed = true, FailureMessage = ex.Message };
+            }
+        }
+    }
+
+    /// <summary>
+    /// A single project entry from `snyk monitor --json`. The CLI emits one object per monitored manifest
+    /// (a JSON array under --all-projects); each carries the <c>uri</c> of the snapshot on the Snyk Web UI.
+    /// </summary>
+    public sealed class SnykMonitorResult
+    {
+        [JsonPropertyName("uri")] public string? Uri { get; set; }
+
+        /// <summary>
+        /// Returns the first snapshot URL from `snyk monitor --json` output (object for one manifest, array
+        /// under --all-projects), or null when the output is empty, unparseable, or carries no uri.
+        /// </summary>
+        public static string? FirstUri(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return null;
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                var results = doc.RootElement.ValueKind == JsonValueKind.Array
+                    ? doc.RootElement.EnumerateArray().Select(e => e.Deserialize<SnykMonitorResult>())
+                    : [doc.RootElement.Deserialize<SnykMonitorResult>()];
+
+                return results.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r?.Uri))?.Uri;
+            }
+            catch (JsonException)
+            {
+                return null;
             }
         }
     }

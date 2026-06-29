@@ -33,7 +33,10 @@ namespace SnykGhe.Core.Configuration
         /// <summary>User-Agent product name sent to GitHub.</summary>
         public string ProductName { get; set; } = "snyk-ghe-app";
 
-        /// <summary>Display name of the check run shown on pull requests.</summary>
-        public string CheckRunName { get; set; } = "Security/Snyk";
+        /// <summary>
+        /// Base name for the Check Runs shown on pull requests. Each product scan prefixes its scan type,
+        /// producing <c>sca/{CheckRunName}</c>, <c>sast/{CheckRunName}</c>, and <c>iac/{CheckRunName}</c>.
+        /// </summary>
+        public string CheckRunName { get; set; } = "snyk";
     }
 }
