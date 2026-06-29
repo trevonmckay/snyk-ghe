@@ -28,18 +28,29 @@ param snykDefaultSeverity string = 'high'
 @description('Default manifest ecosystem.')
 param snykDefaultEcosystem string = 'nuget'
 
+@description('When true, also run `snyk monitor` so the PR check can deep-link to the scan in the Snyk Web UI. Creates a Snyk project per repository.')
+param snykMonitor bool = false
+
+@description('When true, run `snyk code test` (SAST) and publish a separate sast/snyk Check Run. Requires the Snyk Code product on the org.')
+param snykScanCode bool = false
+
+@description('When true, run `snyk iac test` and publish a separate iac/snyk Check Run. Repos with no IaC files skip the check.')
+param snykScanIac bool = false
+
 // --- Secrets (written to Key Vault) ---
+// The GitHub App private key and webhook secret are NOT deploy inputs: the manifest-registration flow
+// (/api/github/app/register) generates them and writes them to Key Vault at runtime. The app reads them
+// from Key Vault, so the template neither seeds nor overwrites them.
 @secure()
-@description('PEM-encoded GitHub App private key.')
-param gitHubPrivateKeyPem string
+@description('Snyk group-level service account token. Optional: supply this or the OAuth client-credentials pair (or both). At least one is required for scans to authenticate.')
+param snykToken string = ''
+
+@description('Snyk OAuth 2.0 client-credentials service account id (optional alternative/complement to snykToken). A public identifier, not a secret — passed as plain config, not stored in Key Vault.')
+param snykOAuthClientId string = ''
 
 @secure()
-@description('GitHub App webhook secret.')
-param gitHubWebhookSecret string
-
-@secure()
-@description('Snyk group-level service account token.')
-param snykToken string
+@description('Snyk OAuth 2.0 client-credentials service account secret. Paired with snykOAuthClientId.')
+param snykOAuthClientSecret string = ''
 
 @secure()
 @description('API key protecting the admin mapping endpoint.')
@@ -53,13 +64,13 @@ param functionRuntimeVersion string = '10.0'
 
 var storageName = toLower('${baseName}stg')
 var acrName = toLower('${baseName}acr')
-var kvName = '${baseName}-kv'
-var uamiName = '${baseName}-id'
-var lawName = '${baseName}-law'
-var envName = '${baseName}-cae'
+var kvName = 'kvsnyk'
+var uamiName = 'id-snyk-worker'
+var lawName = 'log-snyk'
+var envName = toLower('cae-snyk-${location}')
 var appName = '${baseName}-app'
-var sbName = toLower('${baseName}-sb')
-var planName = '${baseName}-fcplan'
+var sbName = 'sbns-snyk'
+var planName = 'plan-snyk-functions'
 var functionName = '${baseName}-fn'
 var aiName = '${baseName}-ai'
 var deploymentContainerName = 'app-package'
@@ -74,7 +85,7 @@ var roleAcrPull = subscriptionResourceId('Microsoft.Authorization/roleDefinition
 // Azure Service Bus Data Owner — the Function sends, the Container App receives, and the KEDA scaler
 // reads queue depth; this one role covers all three for the shared identity.
 var roleServiceBusDataOwner = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '090c5cfd-751d-490a-894a-3ce6f1109419')
-var roleMonitoringMetricsPublisher = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '3913510d-42f4-4751-9f13-9ccb3af68d1f')
+var roleMonitoringMetricsPublisher = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '3913510d-42f4-4e42-8a64-420c390055eb')
 
 resource uami 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: uamiName
@@ -169,24 +180,24 @@ resource kv 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
-resource secretPrivateKey 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: kv
-  name: 'github-app-private-key'
-  properties: { value: gitHubPrivateKeyPem }
-  dependsOn: [ deployerSecretsOfficer ]
-}
+// github-app-private-key and github-webhook-secret are intentionally absent: registration writes them to
+// Key Vault at runtime. The Container App loads the private key via the Key Vault configuration provider,
+// and the Function reads the webhook secret via an App Service Key Vault reference (which tolerates the
+// secret being absent until registration runs).
 
-resource secretWebhook 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: kv
-  name: 'github-webhook-secret'
-  properties: { value: gitHubWebhookSecret }
-  dependsOn: [ deployerSecretsOfficer ]
-}
-
-resource secretSnykToken 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+// Snyk auth secrets are created only for the values supplied — Key Vault rejects empty secret values, and
+// the app authenticates with whichever of token / OAuth client-credentials is present.
+resource secretSnykToken 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(snykToken)) {
   parent: kv
   name: 'snyk-token'
   properties: { value: snykToken }
+  dependsOn: [ deployerSecretsOfficer ]
+}
+
+resource secretSnykOAuthClientSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (!empty(snykOAuthClientSecret)) {
+  parent: kv
+  name: 'snyk-oauth-client-secret'
+  properties: { value: snykOAuthClientSecret }
   dependsOn: [ deployerSecretsOfficer ]
 }
 
@@ -246,6 +257,19 @@ resource deployerSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022-04
   properties: {
     roleDefinitionId: roleKeyVaultSecretsOfficer
     principalId: deployerObjectId
+  }
+}
+
+// The self-service registration flow runs on the Container App and writes the generated App private key
+// and webhook secret back to Key Vault, so the runtime identity needs write (Secrets Officer), not just
+// the read (Secrets User) granted above.
+resource uamiSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(kv.id, uami.id, roleKeyVaultSecretsOfficer)
+  scope: kv
+  properties: {
+    roleDefinitionId: roleKeyVaultSecretsOfficer
+    principalId: uami.properties.principalId
+    principalType: 'ServicePrincipal'
   }
 }
 
@@ -344,13 +368,11 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
       GitHubWebhookSecret: '@Microsoft.KeyVault(SecretUri=${kv.properties.vaultUri}secrets/github-webhook-secret)'
     }
   }
-
   dependsOn: [
     blobDataOwner
     queueDataContributor
     secretsUser
     serviceBusDataOwner
-    secretWebhook
   ]
 }
 
@@ -359,15 +381,38 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: envName
   location: location
   properties: {
+    // Send logs to Azure Monitor; the diagnostic setting below routes them to the Log Analytics workspace.
+    // Logs land in the dedicated ContainerAppConsoleLogs / ContainerAppSystemLogs tables (no _CL suffix,
+    // Log column not Log_s) — query those, not the _CL custom-log tables.
     appLogsConfiguration: {
-      destination: 'log-analytics'
-      logAnalyticsConfiguration: {
-        customerId: law.properties.customerId
-        sharedKey: law.listKeys().primarySharedKey
-      }
+      destination: 'azure-monitor'
     }
   }
 }
+
+resource envDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'send-app-logs-to-log-analytics'
+  scope: env
+  properties: {
+    workspaceId: law.id
+    logAnalyticsDestinationType: 'Dedicated'
+    logs: [
+      { category: 'ContainerAppConsoleLogs', enabled: true }
+    ]
+  }
+}
+
+// Wire only the Snyk auth values that were supplied (Container App secretRefs must resolve to a secret that
+// actually exists). The app reads SNYK_TOKEN and/or the OAuth client-credentials pair, whichever is present.
+var snykAuthAppSecrets = concat(
+  empty(snykToken) ? [] : [ { name: 'snyk-token', keyVaultUrl: '${kv.properties.vaultUri}secrets/snyk-token', identity: uami.id } ],
+  empty(snykOAuthClientSecret) ? [] : [ { name: 'snyk-oauth-client-secret', keyVaultUrl: '${kv.properties.vaultUri}secrets/snyk-oauth-client-secret', identity: uami.id } ]
+)
+var snykAuthEnv = concat(
+  empty(snykToken) ? [] : [ { name: 'Snyk__Token', secretRef: 'snyk-token' } ],
+  empty(snykOAuthClientId) ? [] : [ { name: 'Snyk__OAuthClientId', value: snykOAuthClientId } ],
+  empty(snykOAuthClientSecret) ? [] : [ { name: 'Snyk__OAuthClientSecret', secretRef: 'snyk-oauth-client-secret' } ]
+)
 
 resource app 'Microsoft.App/containerApps@2025-07-01' = {
   name: appName
@@ -381,31 +426,29 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
   properties: {
     managedEnvironmentId: env.id
     configuration: {
-      // No ingress: the Function is the only public endpoint. The app wakes from zero on queue messages
-      // via the KEDA Service Bus scale rule below.
+      // Ingress serves only the admin/registration routes (e.g. /api/github/app/register). GitHub webhooks
+      // still flow through the Function front door, so this endpoint sees no GitHub-timeout-bound traffic; a
+      // cold-start wake on an occasional admin call is acceptable. The app still scales to zero, and queue
+      // messages wake it via the KEDA Service Bus rule below.
+      ingress: {
+        external: true
+        targetPort: 8080
+        transport: 'auto'
+        allowInsecure: false
+      }
       registries: [
         {
           server: acr.properties.loginServer
           identity: uami.id
         }
       ]
-      secrets: [
-        {
-          name: 'github-private-key'
-          keyVaultUrl: '${kv.properties.vaultUri}secrets/github-app-private-key'
-          identity: uami.id
-        }
-        {
-          name: 'snyk-token'
-          keyVaultUrl: '${kv.properties.vaultUri}secrets/snyk-token'
-          identity: uami.id
-        }
+      secrets: concat([
         {
           name: 'admin-api-key'
           keyVaultUrl: '${kv.properties.vaultUri}secrets/admin-api-key'
           identity: uami.id
         }
-      ]
+      ], snykAuthAppSecrets)
     }
     template: {
       containers: [
@@ -416,27 +459,41 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
             cpu: json('0.5')
             memory: '1Gi'
           }
-          env: [
+          env: concat([
             // DefaultAzureCredential selects this user-assigned identity for Storage, Key Vault, and Service Bus.
             { name: 'AZURE_CLIENT_ID', value: uami.properties.clientId }
             { name: 'GitHub__ApiBaseUrl', value: gitHubApiBaseUrl }
             { name: 'GitHub__AppId', value: string(gitHubAppId) }
-            { name: 'GitHub__PrivateKeyPem', secretRef: 'github-private-key' }
-            { name: 'Snyk__Token', secretRef: 'snyk-token' }
+            // GitHub__PrivateKeyPem is loaded from Key Vault at runtime via the app's Key Vault
+            // configuration provider, not injected here — registration writes it after deploy.
             { name: 'Snyk__DefaultSnykOrgId', value: snykDefaultOrgId }
             { name: 'Snyk__DefaultSeverityThreshold', value: snykDefaultSeverity }
             { name: 'Snyk__DefaultEcosystem', value: snykDefaultEcosystem }
+            { name: 'Snyk__Monitor', value: string(snykMonitor) }
+            { name: 'Snyk__ScanCode', value: string(snykScanCode) }
+            { name: 'Snyk__ScanIac', value: string(snykScanIac) }
             { name: 'Storage__TableServiceUri', value: storage.properties.primaryEndpoints.table }
             { name: 'Storage__TableName', value: 'installations' }
             { name: 'Storage__AdminApiKey', secretRef: 'admin-api-key' }
             { name: 'ServiceBus__FullyQualifiedNamespace', value: '${serviceBus.name}.servicebus.windows.net' }
             { name: 'ServiceBus__QueueName', value: serviceBusQueueName }
-          ]
+            // Registration runs here, but the manifest's webhook URL must point at the Function front door,
+            // not this container — otherwise GitHub would deliver webhooks straight to the scale-to-zero app.
+            { name: 'Registration__PublicBaseUrl', value: 'https://${appName}.${env.properties.defaultDomain}' }
+            { name: 'Registration__WebhookUrl', value: 'https://${functionApp.properties.defaultHostName}/api/github/webhooks' }
+            // Registration persists the generated private key + webhook secret to Key Vault. This app then
+            // loads the private key from there via the Key Vault configuration provider; the Function reads
+            // the webhook secret via its own Key Vault reference.
+            { name: 'SecretRepository__Provider', value: 'AzureKeyVault' }
+            { name: 'SecretRepository__KeyVaultUri', value: kv.properties.vaultUri }
+          ], snykAuthEnv)
         }
       ]
       scale: {
-        // Scale to zero when idle; wake and scale out on queue depth. A scale rule is mandatory here
-        // because ingress is disabled — without it the app could never start back up from zero.
+        // Scale to zero when idle; wake on whichever fires first. The queue rule handles the webhook path;
+        // the HTTP rule is required so an admin/registration call to the ingress can wake the app from zero.
+        // A custom rule replaces the default HTTP scaler, so without an explicit http rule the ingress would
+        // have nothing to activate the app and admin requests would hang.
         minReplicas: 0
         maxReplicas: 10
         rules: [
@@ -452,21 +509,31 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
               identity: uami.id
             }
           }
+          {
+            name: 'http-admin'
+            http: {
+              metadata: {
+                concurrentRequests: '10'
+              }
+            }
+          }
         ]
       }
     }
   }
   dependsOn: [
     secretsUser
+    uamiSecretsOfficer
     acrPull
     serviceBusDataOwner
-    secretPrivateKey
     secretSnykToken
+    secretSnykOAuthClientSecret
     secretAdminKey
   ]
 }
 
 output webhookUrl string = 'https://${functionApp.properties.defaultHostName}/api/github/webhooks'
+output registrationUrl string = 'https://${app.properties.configuration.ingress.fqdn}/api/github/app/register'
 output functionAppName string = functionApp.name
 output acrLoginServer string = acr.properties.loginServer
 output keyVaultName string = kv.name

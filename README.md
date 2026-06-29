@@ -15,7 +15,10 @@ human user's Personal Access Token.
 
 ## What it does
 
-- **PR status checks** — runs `snyk test` on each pull request and publishes a Check Run that can gate merges.
+- **PR status checks** — scans each pull request and publishes a Check Run per Snyk product that can gate
+  merges: **`sca/snyk`** (open source, always on), plus optional **`sast/snyk`** (`snyk code test`) and
+  **`iac/snyk`** (`snyk iac test`). A product the org isn't licensed for, or a repo with nothing to scan,
+  skips its check rather than failing.
 - **Summary comments** — posts a severity breakdown and the top findings as a PR comment from the bot.
 - **Automated fix PRs** — for NuGet, patches the vulnerable `PackageReference` / `PackageVersion` /
   `packages.config` entries and opens a bot-authored PR targeting the contributor's branch.
@@ -79,7 +82,10 @@ No organization or account permissions are required.
 
 ### Subscribe to events
 
-- **Pull request** — triggers the scan on the `opened`, `synchronize`, and `reopened` actions.
+- **Pull request** — triggers the scan on the `opened`, `synchronize`, `reopened`, and `ready_for_review`
+  actions. Draft PRs are not scanned; a PR opened as a draft is first scanned when it is marked ready for review.
+- **Check run** — re-runs the scan when a user clicks **Re-run** on the Snyk check (the `rerequested`
+  action). GitHub delivers this only to the App that owns the check run, so it always targets our own check.
 
 The **installation** and **installation_repositories** events — used to maintain the
 org→installation registry as the App is installed, suspended, or removed — are delivered to every
@@ -109,9 +115,12 @@ Snyk org).
 
 The deploy templates wire this up: the runtime identity is granted **write** to the secret store
 (Azure: Key Vault Secrets Officer; AWS: `secretsmanager:PutSecretValue`) and `SecretRepository:*` is
-preconfigured. These endpoints need public ingress, so they are available in the always-on Azure
-topology (`main.bicep`) and on AWS App Runner; the scale-to-zero topology's processing container has no
-ingress, so register via one of those (or by hand) there.
+preconfigured. These endpoints need public ingress, so the always-on Azure topology (`main.bicep`) and
+AWS App Runner expose them directly. The scale-to-zero topology (`main-functions.bicep`) front-ends
+*webhooks* with an Azure Function, but still gives the processing Container App its own external ingress
+for the admin/registration routes — so registration works there too (call the `registrationUrl` output).
+Because webhooks and registration then live on different hosts, that template sets `Registration:WebhookUrl`
+to the Function's URL so the generated App's webhook points at the Function, not the Container App.
 
 ## Configuration
 
@@ -123,12 +132,15 @@ All keys bind from `appsettings.json` / environment variables (double-underscore
 | `GitHub:ApiBaseUrl` | REST base, e.g. `https://api.SUBDOMAIN.ghe.com/` (note: not the GHES `/api/v3` form) |
 | `GitHub:AppId` / `GitHub:PrivateKeyPem` | App identity used to mint installation tokens |
 | `GitHub:WebhookSecret` | Validates `X-Hub-Signature-256` on every delivery |
-| `Snyk:Token` *or* `Snyk:OAuthClientId`/`Secret` | Snyk CLI authentication |
+| `Snyk:Token` *or* `Snyk:OAuthClientId`/`Secret` | Snyk CLI authentication (static service-account token, or OAuth client-credentials — the service exchanges those for a short-lived token via `Snyk:OAuthTokenUrl`, default US `https://api.snyk.io/oauth2/token`; override for EU/AU) |
 | `Snyk:DefaultSnykOrgId` / `DefaultSeverityThreshold` / `DefaultEcosystem` | Fallback policy for unmapped orgs |
+| `Snyk:Monitor` | When `true`, also run `snyk monitor` after the gating test so the Check Run's "View more details on Snyk" link points at the scan snapshot in the Snyk Web UI. Off by default — it creates a Snyk project per repository (the PR branch is the target reference). Also drives `--report` publishing for the Code and IaC scans |
+| `Snyk:ScanCode` / `Snyk:ScanIac` | When `true`, additionally run `snyk code test` (SAST) / `snyk iac test` and publish a separate `sast/snyk` / `iac/snyk` Check Run. Off by default (Snyk Code is separately licensed; IaC needs IaC files). A not-applicable product skips its check |
 | `Storage:Provider` | `AzureTable` or `DynamoDb` |
 | `Storage:AdminApiKey` | Guards the `PUT /api/admin/orgs/{org}` mapping endpoint and the registration flow (closed if unset) |
 | `SecretRepository:Provider` | `AzureKeyVault` / `AwsSecretsManager` / `None` — where the registration flow writes generated secrets |
 | `Registration:PublicBaseUrl` | This service's public URL used in the manifest (falls back to the request host) |
+| `Registration:WebhookUrl` | Webhook URL placed in the manifest when the public webhook endpoint is a different host than this service (scale-to-zero topology: the Function). Falls back to `{PublicBaseUrl}/api/github/webhooks` |
 
 Map a GitHub org to a Snyk org at runtime:
 

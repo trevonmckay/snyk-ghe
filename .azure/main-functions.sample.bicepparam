@@ -8,9 +8,12 @@ param gitHubAppId = 0
 param snykDefaultOrgId = ''
 param snykDefaultSeverity = 'high'
 param snykDefaultEcosystem = 'nuget'
+// Snyk OAuth client id — a public identifier, not a secret (not stored in Key Vault).
+param snykOAuthClientId = ''
 
-// Secrets — leave blank here and pass at deploy time; do not commit real values.
-param gitHubPrivateKeyPem = ''
-param gitHubWebhookSecret = ''
+// The GitHub App private key and webhook secret are NOT deploy inputs — registration generates them and
+// writes them to Key Vault at runtime (call the registrationUrl output after deploying).
+// Snyk auth: supply the token, the OAuth pair (id above + secret below), or both. At least one is required.
 param snykToken = ''
+param snykOAuthClientSecret = ''
 param adminApiKey = ''

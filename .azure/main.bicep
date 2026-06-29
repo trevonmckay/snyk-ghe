@@ -28,15 +28,19 @@ param snykDefaultSeverity string = 'high'
 @description('Default manifest ecosystem.')
 param snykDefaultEcosystem string = 'nuget'
 
+@description('When true, also run `snyk monitor` so the PR check can deep-link to the scan in the Snyk Web UI. Creates a Snyk project per repository.')
+param snykMonitor bool = false
+
+@description('When true, run `snyk code test` (SAST) and publish a separate sast/snyk Check Run. Requires the Snyk Code product on the org.')
+param snykScanCode bool = false
+
+@description('When true, run `snyk iac test` and publish a separate iac/snyk Check Run. Repos with no IaC files skip the check.')
+param snykScanIac bool = false
+
 // --- Secrets (written to Key Vault) ---
-@secure()
-@description('PEM-encoded GitHub App private key.')
-param gitHubPrivateKeyPem string
-
-@secure()
-@description('GitHub App webhook secret.')
-param gitHubWebhookSecret string
-
+// The GitHub App private key and webhook secret are NOT deploy inputs: the manifest-registration flow
+// (/api/github/app/register) generates them and writes them to Key Vault at runtime. The app reads them
+// from Key Vault, so the template neither seeds nor overwrites them.
 @secure()
 @description('Snyk group-level service account token.')
 param snykToken string
@@ -50,12 +54,12 @@ param serviceBusQueueName string = 'webhook-deliveries'
 
 var storageName = toLower('${baseName}stg')
 var acrName = toLower('${baseName}acr')
-var kvName = '${baseName}-kv'
-var uamiName = '${baseName}-id'
-var lawName = '${baseName}-law'
-var envName = '${baseName}-cae'
+var kvName = 'kvsnyk'
+var uamiName = 'id-snyk-worker'
+var lawName = 'log-snyk'
+var envName = toLower('cae-snyk-${location}')
 var appName = '${baseName}-app'
-var sbName = toLower('${baseName}-sb')
+var sbName = 'sbns-snyk'
 
 // Built-in role definition ids
 var roleStorageTableDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
@@ -139,19 +143,8 @@ resource kv 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
-resource secretPrivateKey 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: kv
-  name: 'github-app-private-key'
-  properties: { value: gitHubPrivateKeyPem }
-  dependsOn: [ deployerSecretsOfficer ]
-}
-
-resource secretWebhook 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: kv
-  name: 'github-webhook-secret'
-  properties: { value: gitHubWebhookSecret }
-  dependsOn: [ deployerSecretsOfficer ]
-}
+// github-app-private-key and github-webhook-secret are intentionally absent: registration writes them to
+// Key Vault at runtime, and the app loads them from there via the Key Vault configuration provider.
 
 resource secretSnykToken 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   parent: kv
@@ -223,13 +216,25 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: envName
   location: location
   properties: {
+    // Send logs to Azure Monitor; the diagnostic setting below routes them to the Log Analytics workspace.
+    // Logs land in the dedicated ContainerAppConsoleLogs / ContainerAppSystemLogs tables (no _CL suffix,
+    // Log column not Log_s) — query those, not the _CL custom-log tables.
     appLogsConfiguration: {
-      destination: 'log-analytics'
-      logAnalyticsConfiguration: {
-        customerId: law.properties.customerId
-        sharedKey: law.listKeys().primarySharedKey
-      }
+      destination: 'azure-monitor'
     }
+  }
+}
+
+resource envDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'send-to-log-analytics'
+  scope: env
+  properties: {
+    workspaceId: law.id
+    logAnalyticsDestinationType: 'Dedicated'
+    logs: [
+      { category: 'ContainerAppConsoleLogs', enabled: true }
+      { category: 'ContainerAppSystemLogs', enabled: true }
+    ]
   }
 }
 
@@ -259,16 +264,6 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
       ]
       secrets: [
         {
-          name: 'github-private-key'
-          keyVaultUrl: '${kv.properties.vaultUri}secrets/github-app-private-key'
-          identity: uami.id
-        }
-        {
-          name: 'github-webhook-secret'
-          keyVaultUrl: '${kv.properties.vaultUri}secrets/github-webhook-secret'
-          identity: uami.id
-        }
-        {
           name: 'snyk-token'
           keyVaultUrl: '${kv.properties.vaultUri}secrets/snyk-token'
           identity: uami.id
@@ -294,15 +289,19 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
             { name: 'AZURE_CLIENT_ID', value: uami.properties.clientId }
             { name: 'GitHub__ApiBaseUrl', value: gitHubApiBaseUrl }
             { name: 'GitHub__AppId', value: string(gitHubAppId) }
-            { name: 'GitHub__PrivateKeyPem', secretRef: 'github-private-key' }
-            { name: 'GitHub__WebhookSecret', secretRef: 'github-webhook-secret' }
+            // GitHub__PrivateKeyPem and GitHub__WebhookSecret are loaded from Key Vault at runtime via the
+            // app's Key Vault configuration provider, not injected here — registration writes them after deploy.
             { name: 'Snyk__Token', secretRef: 'snyk-token' }
-            // Lets the self-service registration flow write the generated private key + webhook secret back to Key Vault.
+            // Registration writes the generated private key + webhook secret to Key Vault; the app then loads
+            // them via the Key Vault configuration provider (SecretRepository settings below).
             { name: 'SecretRepository__Provider', value: 'AzureKeyVault' }
             { name: 'SecretRepository__KeyVaultUri', value: kv.properties.vaultUri }
             { name: 'Snyk__DefaultSnykOrgId', value: snykDefaultOrgId }
             { name: 'Snyk__DefaultSeverityThreshold', value: snykDefaultSeverity }
             { name: 'Snyk__DefaultEcosystem', value: snykDefaultEcosystem }
+            { name: 'Snyk__Monitor', value: string(snykMonitor) }
+            { name: 'Snyk__ScanCode', value: string(snykScanCode) }
+            { name: 'Snyk__ScanIac', value: string(snykScanIac) }
             { name: 'Storage__TableServiceUri', value: storage.properties.primaryEndpoints.table }
             { name: 'Storage__TableName', value: 'installations' }
             { name: 'Storage__AdminApiKey', secretRef: 'admin-api-key' }
@@ -337,8 +336,6 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
     appSecretsOfficer
     acrPull
     serviceBusDataOwner
-    secretPrivateKey
-    secretWebhook
     secretSnykToken
     secretAdminKey
   ]

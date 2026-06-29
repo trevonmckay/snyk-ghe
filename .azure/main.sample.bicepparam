@@ -9,8 +9,8 @@ param snykDefaultOrgId = ''
 param snykDefaultSeverity = 'high'
 param snykDefaultEcosystem = 'nuget'
 
+// The GitHub App private key and webhook secret are NOT deploy inputs — registration generates them and
+// writes them to Key Vault at runtime (call the registrationUrl output after deploying).
 // Secrets — leave blank here and pass at deploy time; do not commit real values.
-param gitHubPrivateKeyPem = ''
-param gitHubWebhookSecret = ''
 param snykToken = ''
 param adminApiKey = ''

@@ -1,0 +1,27 @@
+# Version control
+.git
+.gitignore
+
+# IDE / editor working dirs (the .vs FileContentIndex holds locked files that break context packing)
+.vs
+.vscode
+.idea
+.claude
+
+# Build output
+**/bin
+**/obj
+**/out
+
+# Git worktrees and local scratch
+.worktrees
+
+# Secrets and local overrides (never bake into an image layer)
+*.pem
+**/*.local.bicepparam
+**/appsettings.*.local.json
+
+# Infra and docs not needed by the image build
+.azure
+.aws
+**/*.md
