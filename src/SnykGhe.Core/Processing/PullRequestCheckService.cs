@@ -18,6 +18,7 @@ namespace SnykGhe.Core.Processing
     {
         private readonly GitHubClientFactory _clientFactory;
         private readonly SnykScanner _scanner;
+        private readonly SnykProjectUrlResolver _projectUrlResolver;
         private readonly OrgPolicyResolver _policyResolver;
         private readonly FixPullRequestService _prFixService;
         private readonly GitHubOptions _gitHub;
@@ -27,6 +28,7 @@ namespace SnykGhe.Core.Processing
         public PullRequestCheckService(
             GitHubClientFactory clientFactory,
             SnykScanner scanner,
+            SnykProjectUrlResolver projectUrlResolver,
             OrgPolicyResolver policyResolver,
             FixPullRequestService fixService,
             IOptions<GitHubOptions> gitHubOptions,
@@ -35,6 +37,7 @@ namespace SnykGhe.Core.Processing
         {
             _clientFactory = clientFactory;
             _scanner = scanner;
+            _projectUrlResolver = projectUrlResolver;
             _policyResolver = policyResolver;
             _prFixService = fixService;
             _gitHub = gitHubOptions.Value;
@@ -97,7 +100,20 @@ namespace SnykGhe.Core.Processing
 
                 if (_snyk.ScanCode)
                 {
-                    results.Add(await _scanner.ScanCodeAsync(workDir, policy, _snyk.Monitor, projectName, request.RemoteRepoUrl, request.HeadRef, cancellationToken));
+                    var codeResult = await _scanner.ScanCodeAsync(workDir, policy, _snyk.Monitor, projectName, request.RemoteRepoUrl, request.HeadRef, cancellationToken);
+
+                    // `snyk code test --report` publishes the snapshot but, unlike `snyk monitor`, does not
+                    // return its URL in --json output; look it up so the Code row can deep-link.
+                    if (_snyk.Monitor && !codeResult.Failed && !codeResult.NotApplicable)
+                    {
+                        var url = await _projectUrlResolver.ResolveAsync(SnykProduct.Code, projectName, request.HeadRef, policy, cancellationToken);
+                        if (url is not null)
+                        {
+                            codeResult = codeResult.WithDetailsUrl(url);
+                        }
+                    }
+
+                    results.Add(codeResult);
                 }
 
                 if (_snyk.ScanIac)

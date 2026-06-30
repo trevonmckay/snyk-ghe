@@ -52,6 +52,19 @@ namespace SnykGhe.Core.Snyk
         public int CountAtOrAbove(SnykSeverity threshold) =>
             Findings.Count(f => SnykSeverityExtensions.Parse(f.Severity) >= threshold);
 
+        /// <summary>Returns a copy with <see cref="DetailsUrl"/> set, used to attach the Snyk Web UI link
+        /// after a product has published its snapshot.</summary>
+        public ProductScanResult WithDetailsUrl(string detailsUrl) =>
+            new()
+            {
+                Product = Product,
+                Findings = Findings,
+                Failed = Failed,
+                NotApplicable = NotApplicable,
+                FailureMessage = FailureMessage,
+                DetailsUrl = detailsUrl,
+            };
+
         public static ProductScanResult Skip(SnykProduct product) =>
             new() { Product = product, Findings = [], NotApplicable = true };
 

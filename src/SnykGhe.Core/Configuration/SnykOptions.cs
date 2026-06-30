@@ -30,6 +30,24 @@ namespace SnykGhe.Core.Configuration
         /// </summary>
         public string OAuthTokenUrl { get; set; } = "https://api.snyk.io/oauth2/token";
 
+        /// <summary>
+        /// Base URL of the Snyk REST API, used to resolve a published project's Web UI link. Defaults to the
+        /// US region; override for EU/AU tenants (e.g. <c>https://api.eu.snyk.io</c>).
+        /// </summary>
+        public string ApiBaseUrl { get; set; } = "https://api.snyk.io";
+
+        /// <summary>
+        /// Base URL of the Snyk Web UI, used to build the project deep link the Code Check Run points to.
+        /// Defaults to the US region; override for EU/AU tenants (e.g. <c>https://app.eu.snyk.io</c>).
+        /// </summary>
+        public string WebAppBaseUrl { get; set; } = "https://app.snyk.io";
+
+        /// <summary>
+        /// Snyk REST API version (date-stamped) sent as the required <c>version</c> query parameter. Pinned so
+        /// a server-side default change cannot alter response shapes; bump when adopting a newer GA version.
+        /// </summary>
+        public string RestApiVersion { get; set; } = "2024-10-15";
+
         /// <summary>Default Snyk org id for GitHub orgs without an explicit mapping.</summary>
         public string? DefaultSnykOrgId { get; set; }
 
