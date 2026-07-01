@@ -3,6 +3,7 @@ using Octokit.Webhooks.Events;
 using Octokit.Webhooks.Events.CheckRun;
 using Octokit.Webhooks.Events.Installation;
 using Octokit.Webhooks.Events.PullRequest;
+using Microsoft.Extensions.Options;
 using Octokit.Webhooks.Models;
 using SnykGhe.Core.Configuration;
 using SnykGhe.Core.Infrastructure;
@@ -25,6 +26,7 @@ namespace SnykGhe.Core.Webhooks
         private readonly IGitHubInstallationRegistry _registry;
         private readonly OrgPolicyResolver _policyResolver;
         private readonly SnykProjectCleanupService _cleanupService;
+        private readonly SnykOptions _snyk;
         private readonly ILogger _logger;
 
         public GitHubWebhookEventProcessor(
@@ -33,6 +35,7 @@ namespace SnykGhe.Core.Webhooks
             IGitHubInstallationRegistry registry,
             OrgPolicyResolver policyResolver,
             SnykProjectCleanupService cleanupService,
+            IOptions<SnykOptions> snykOptions,
             ILogger<GitHubWebhookEventProcessor> logger)
         {
             this._prCheckService = prCheckService;
@@ -40,6 +43,7 @@ namespace SnykGhe.Core.Webhooks
             this._registry = registry;
             this._policyResolver = policyResolver;
             this._cleanupService = cleanupService;
+            this._snyk = snykOptions.Value;
             this._logger = logger;
         }
 
@@ -210,6 +214,12 @@ namespace SnykGhe.Core.Webhooks
             PushEvent pushEvent,
             CancellationToken cancellationToken = default)
         {
+            // ScanDefaultBranch gates only the automatic push trigger; the manual scan endpoint bypasses it.
+            if (!_snyk.ScanDefaultBranch)
+            {
+                return;
+            }
+
             if (pushEvent.Installation is null ||
                 pushEvent.Repository is not { CloneUrl: { } cloneUrl, DefaultBranch: { } defaultBranch } repository)
             {

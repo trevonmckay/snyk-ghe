@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace SnykGhe.Core.Processing
 {
     /// <summary>
@@ -21,6 +23,7 @@ namespace SnykGhe.Core.Processing
         public required string HeadSha { get; init; }
 
         /// <summary>The clone URL normalized to the Snyk target name (trailing <c>.git</c> removed).</summary>
+        [JsonIgnore]
         public string RemoteRepoUrl => ScanRequest.NormalizeRemoteRepoUrl(CloneUrl);
     }
 }

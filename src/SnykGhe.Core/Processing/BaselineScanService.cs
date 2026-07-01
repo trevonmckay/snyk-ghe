@@ -6,10 +6,12 @@ using SnykGhe.Core.Snyk;
 namespace SnykGhe.Core.Processing
 {
     /// <summary>
-    /// Scans a repository's default branch and persists a Snyk monitor snapshot under that branch's target
-    /// reference. Triggered by a push to the default branch (typically a merged PR). This is the durable
-    /// monitored baseline: it re-establishes the snapshot Snyk alerts against as new vulnerabilities are
-    /// disclosed. It posts no Check Run, comment, or fix PR — there is no pull request.
+    /// Scans a repository branch and persists a Snyk monitor snapshot under that branch's target reference.
+    /// Triggered by a push to the default branch (typically a merged PR) or by the manual scan endpoint. This
+    /// is the durable monitored baseline: it re-establishes the snapshot Snyk alerts against as new
+    /// vulnerabilities are disclosed. It posts no Check Run, comment, or fix PR — there is no pull request.
+    /// The <c>Snyk:ScanDefaultBranch</c> gate lives on the automatic push trigger, not here, so a manual scan
+    /// runs regardless of that setting.
     /// </summary>
     public sealed class BaselineScanService
     {
@@ -38,11 +40,6 @@ namespace SnykGhe.Core.Processing
 
         public async Task ProcessAsync(BaselineScanRequest request, CancellationToken cancellationToken)
         {
-            if (!_snyk.ScanDefaultBranch)
-            {
-                return;
-            }
-
             var policy = await _policyResolver.ResolveAsync(request.Owner, cancellationToken);
             if (policy.Suspended)
             {

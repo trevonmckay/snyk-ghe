@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using SnykGhe.Core.Configuration;
@@ -78,18 +76,7 @@ namespace SnykGhe.Service.Controllers
                 });
         }
 
-        private bool IsAuthorized()
-        {
-            if (string.IsNullOrEmpty(_options.AdminApiKey))
-            {
-                // Closed by default when no key is configured.
-                return false;
-            }
-
-            var provided = Request.Headers["X-Admin-Key"].FirstOrDefault();
-            return provided is not null && CryptographicOperations.FixedTimeEquals(
-                Encoding.UTF8.GetBytes(provided),
-                Encoding.UTF8.GetBytes(_options.AdminApiKey));
-        }
+        private bool IsAuthorized() =>
+            AdminApiKeyGuard.Matches(Request.Headers["X-Admin-Key"].FirstOrDefault(), _options.AdminApiKey);
     }
 }

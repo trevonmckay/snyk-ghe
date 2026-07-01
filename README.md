@@ -162,6 +162,21 @@ curl -X PUT https://<host>/api/admin/orgs/my-github-org \
   -d '{"snykOrgId":"<snyk-org-uuid>","severityThreshold":"high","ecosystem":"nuget"}'
 ```
 
+Manually trigger a baseline scan (the same scan a push to the default branch runs). Scans the
+default branch unless the request body overrides the branch; returns **202** once queued and runs in
+the background, so results surface in the Snyk Web UI and logs rather than the HTTP response. Runs
+regardless of `Snyk:ScanDefaultBranch` (that setting gates only the automatic push trigger):
+
+```bash
+# default branch (no body)
+curl -X POST https://<host>/api/admin/scans/my-github-org/my-repo -H "X-Admin-Key: <admin-key>"
+
+# a specific branch
+curl -X POST https://<host>/api/admin/scans/my-github-org/my-repo \
+  -H "X-Admin-Key: <admin-key>" -H "Content-Type: application/json" \
+  -d '{"branch":"release/1.x"}'
+```
+
 ### One app, one enterprise
 
 This service is built for **a single GitHub App registered on a single GitHub host**. A GitHub App
