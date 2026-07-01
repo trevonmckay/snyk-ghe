@@ -21,6 +21,12 @@ namespace SnykGhe.Core.Configuration
         /// <summary>Table/collection name holding one row per GitHub org installation (both providers).</summary>
         public string TableName { get; set; } = "installations";
 
+        /// <summary>
+        /// Table/collection name for baseline-scan coordination (single-flight leases + latest-requested-commit
+        /// per repo branch). Separate from <see cref="TableName"/>; both providers create it on startup.
+        /// </summary>
+        public string ScanCoordinationTableName { get; set; } = "scancoordination";
+
         /// <summary>Create the table at startup if it does not exist (mirrors local-dev convenience).</summary>
         public bool CreateTableIfMissing { get; set; } = true;
 

@@ -19,6 +19,7 @@ namespace SnykGhe.Core.Processing
         private readonly OrgPolicyResolver _policyResolver;
         private readonly RepositoryCloner _cloner;
         private readonly SnykScanner _scanner;
+        private readonly ScanCoalescer _coalescer;
         private readonly SnykOptions _snyk;
         private readonly ILogger _logger;
 
@@ -27,6 +28,7 @@ namespace SnykGhe.Core.Processing
             OrgPolicyResolver policyResolver,
             RepositoryCloner cloner,
             SnykScanner scanner,
+            ScanCoalescer coalescer,
             IOptions<SnykOptions> snykOptions,
             ILogger<BaselineScanService> logger)
         {
@@ -34,6 +36,7 @@ namespace SnykGhe.Core.Processing
             _policyResolver = policyResolver;
             _cloner = cloner;
             _scanner = scanner;
+            _coalescer = coalescer;
             _snyk = snykOptions.Value;
             _logger = logger;
         }
@@ -50,6 +53,15 @@ namespace SnykGhe.Core.Processing
             _logger.LogInformation("Baseline scan of {Owner}/{Repo} default branch {Branch} ({Sha}); Snyk org {SnykOrg}",
                 request.Owner, request.Repo, request.Branch, request.HeadSha, policy.SnykOrgId ?? "(default)");
 
+            // Coalesce bursts of pushes to this branch into one in-flight scan (latest commit wins).
+            var key = $"{request.Owner}/{request.Repo}#{request.Branch}".ToLowerInvariant();
+            await _coalescer.RunAsync(key, request.HeadSha,
+                token => RunScanAsync(request, policy, token), cancellationToken);
+        }
+
+        /// <summary>Clones and scans the branch, returning the commit SHA actually cloned (the branch tip).</summary>
+        private async Task<string> RunScanAsync(BaselineScanRequest request, ResolvedPolicy policy, CancellationToken cancellationToken)
+        {
             var credentials = await _clientFactory.CreateInstallationClientAsync(request.InstallationId, cancellationToken);
 
             var workDir = Path.Combine(Path.GetTempPath(), $"snyk-baseline-{request.Repo}-{Guid.NewGuid():N}");
@@ -58,6 +70,7 @@ namespace SnykGhe.Core.Processing
             try
             {
                 await _cloner.CloneAsync(request.CloneUrl, request.Branch, credentials.Token, workDir, cancellationToken);
+                var scannedSha = await _cloner.ResolveHeadShaAsync(workDir, cancellationToken);
 
                 // Open Source is always on. Monitor is forced regardless of Snyk:Monitor: persisting the
                 // default-branch snapshot is the entire purpose of this scan.
@@ -86,8 +99,10 @@ namespace SnykGhe.Core.Processing
                     await _scanner.ScanIacAsync(workDir, policy, publish: true, projectName, request.RemoteRepoUrl, request.Branch, cancellationToken);
                 }
 
-                _logger.LogInformation("Baseline scan of {Owner}/{Repo} default branch {Branch} complete.",
-                    request.Owner, request.Repo, request.Branch);
+                _logger.LogInformation("Baseline scan of {Owner}/{Repo} default branch {Branch} ({Sha}) complete.",
+                    request.Owner, request.Repo, request.Branch, scannedSha);
+
+                return scannedSha;
             }
             finally
             {

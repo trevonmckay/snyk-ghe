@@ -54,11 +54,13 @@ if (storageProvider == StorageProvider.DynamoDb)
 {
     builder.Services.AddSingleton<IGitHubInstallationRegistry, DynamoDbGitHubInstallationRegistry>();
     builder.Services.AddSingleton<IAppConfigStore, DynamoDbAppConfigStore>();
+    builder.Services.AddSingleton<IScanCoordinationStore, DynamoDbScanCoordinationStore>();
 }
 else
 {
     builder.Services.AddSingleton<IGitHubInstallationRegistry, TableStorageGitHubInstallationRegistry>();
     builder.Services.AddSingleton<IAppConfigStore, TableAppConfigStore>();
+    builder.Services.AddSingleton<IScanCoordinationStore, TableStorageScanCoordinationStore>();
 }
 
 builder.Services.AddHostedService<GitHubInstallationRegistryInitializer>();
@@ -75,6 +77,7 @@ builder.Services.AddSingleton<IManifestPatcher, NuGetManifestPatcher>();
 builder.Services.AddSingleton<FixPullRequestService>();
 builder.Services.AddSingleton<RepositoryCloner>();
 builder.Services.AddSingleton<PullRequestCheckService>();
+builder.Services.AddSingleton<ScanCoalescer>();
 builder.Services.AddSingleton<BaselineScanService>();
 builder.Services.AddSingleton<WebhookEventProcessor, GitHubWebhookEventProcessor>();
 builder.Services.AddSingleton<WebhookDispatcher>();

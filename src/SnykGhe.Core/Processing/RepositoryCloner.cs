@@ -33,5 +33,22 @@ namespace SnykGhe.Core.Processing
                 throw new InvalidOperationException($"git clone failed (exit {result.ExitCode}): {result.StandardError.Trim()}");
             }
         }
+
+        /// <summary>Returns the commit SHA at the tip of the checkout in <paramref name="workDir"/>.</summary>
+        public async Task<string> ResolveHeadShaAsync(string workDir, CancellationToken cancellationToken)
+        {
+            var result = await Cli.Wrap("git")
+                .WithArguments(["rev-parse", "HEAD"])
+                .WithWorkingDirectory(workDir)
+                .WithValidation(CommandResultValidation.None)
+                .ExecuteBufferedAsync(cancellationToken);
+
+            if (result.ExitCode != 0)
+            {
+                throw new InvalidOperationException($"git rev-parse HEAD failed (exit {result.ExitCode}): {result.StandardError.Trim()}");
+            }
+
+            return result.StandardOutput.Trim();
+        }
     }
 }

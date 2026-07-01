@@ -83,6 +83,21 @@ namespace SnykGhe.Core.Configuration
         public bool ScanDefaultBranch { get; set; } = true;
 
         /// <summary>
+        /// When true, coordinate baseline scans through the durable coordination store so a burst of pushes to
+        /// one branch collapses to a single in-flight scan (latest commit wins), two workers never scan the same
+        /// branch at once, and a commit already scanned (a redelivered message, or a push the in-flight scan's
+        /// clone already picked up) is skipped. On by default. Set false to scan every push independently.
+        /// </summary>
+        public bool CoalesceBaselineScans { get; set; } = true;
+
+        /// <summary>
+        /// Lifetime of a baseline-scan single-flight lease. Must comfortably exceed a scan's duration: if a scan
+        /// runs longer, another worker may steal the lease and scan the same branch concurrently. A crashed
+        /// holder's lease also blocks that branch's baseline scans until this elapses.
+        /// </summary>
+        public int ScanLeaseMinutes { get; set; } = 30;
+
+        /// <summary>
         /// When true, run <c>snyk code test</c> (SAST) and publish a separate "Code" Check Run. Off by
         /// default: Snyk Code is a separately licensed product, so it must be enabled per deployment. A repo
         /// with no scannable source, or an org without the Code entitlement, skips the check rather than failing.
