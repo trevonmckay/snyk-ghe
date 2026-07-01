@@ -64,12 +64,23 @@ namespace SnykGhe.Core.Configuration
         public bool OpenFixPullRequests { get; set; } = true;
 
         /// <summary>
-        /// When true, also run <c>snyk monitor</c> after the gating test so the scan is persisted to the
-        /// Snyk Web UI and the Check Run can deep-link to the snapshot. Off by default: monitoring creates
-        /// a Snyk project per repository (the PR branch is the target reference), a side effect that should
-        /// be opted into per deployment. Also drives <c>--report</c> publishing for the Code and IaC scans.
+        /// When true, also run <c>snyk monitor</c> after a pull request's gating test so the PR-branch scan is
+        /// persisted to the Snyk Web UI and the Check Run can deep-link to the snapshot. Off by default:
+        /// monitoring a PR branch creates a short-lived Snyk project per PR (the PR head branch is the target
+        /// reference), a side effect that should be opted into per deployment. Also drives <c>--report</c>
+        /// publishing for the Code and IaC scans. This does not govern the default-branch baseline monitor,
+        /// which is controlled by <see cref="ScanDefaultBranch"/>.
         /// </summary>
         public bool Monitor { get; set; } = false;
+
+        /// <summary>
+        /// When true, run a baseline scan of a repository's default branch on every push to it (typically the
+        /// commit a merged PR produces) and <c>snyk monitor</c> the result under the default-branch target
+        /// reference. This is the durable monitored snapshot that lets Snyk alert on newly-disclosed
+        /// vulnerabilities without a code change — distinct from the opt-in per-PR-branch monitoring in
+        /// <see cref="Monitor"/>. On by default; set false to disable the push-triggered baseline entirely.
+        /// </summary>
+        public bool ScanDefaultBranch { get; set; } = true;
 
         /// <summary>
         /// When true, run <c>snyk code test</c> (SAST) and publish a separate "Code" Check Run. Off by

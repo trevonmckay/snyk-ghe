@@ -1,6 +1,4 @@
 using System.Text;
-using CliWrap;
-using CliWrap.Buffered;
 using Microsoft.Extensions.Options;
 using Octokit;
 using SnykGhe.Core.Configuration;
@@ -21,6 +19,7 @@ namespace SnykGhe.Core.Processing
         private readonly SnykProjectUrlResolver _projectUrlResolver;
         private readonly OrgPolicyResolver _policyResolver;
         private readonly FixPullRequestService _prFixService;
+        private readonly RepositoryCloner _cloner;
         private readonly GitHubOptions _gitHub;
         private readonly SnykOptions _snyk;
         private readonly ILogger _logger;
@@ -31,6 +30,7 @@ namespace SnykGhe.Core.Processing
             SnykProjectUrlResolver projectUrlResolver,
             OrgPolicyResolver policyResolver,
             FixPullRequestService fixService,
+            RepositoryCloner cloner,
             IOptions<GitHubOptions> gitHubOptions,
             IOptions<SnykOptions> snykOptions,
             ILogger<PullRequestCheckService> logger)
@@ -40,6 +40,7 @@ namespace SnykGhe.Core.Processing
             _projectUrlResolver = projectUrlResolver;
             _policyResolver = policyResolver;
             _prFixService = fixService;
+            _cloner = cloner;
             _gitHub = gitHubOptions.Value;
             _snyk = snykOptions.Value;
             _logger = logger;
@@ -83,7 +84,7 @@ namespace SnykGhe.Core.Processing
             {
                 await StartChecksAsync(credentials.Client, request, products, startedAt, checkRunIds);
 
-                await CloneAsync(request, credentials.Token, workDir, cancellationToken);
+                await _cloner.CloneAsync(request.CloneUrl, request.HeadRef, credentials.Token, workDir, cancellationToken);
 
                 // Open Source (always on). Its raw result also drives fix PRs, so keep it alongside the
                 // normalized form used for the Check Run.
@@ -91,7 +92,7 @@ namespace SnykGhe.Core.Processing
                 string? openSourceUrl = null;
                 if (!openSourceScan.Failed)
                 {
-                    openSourceUrl = await _scanner.MonitorAsync(workDir, policy, request.RemoteRepoUrl, request.HeadRef, cancellationToken);
+                    openSourceUrl = await _scanner.MonitorAsync(workDir, policy, request.RemoteRepoUrl, request.HeadRef, forceMonitor: false, cancellationToken);
                 }
 
                 var results = new List<ProductScanResult> { ToProductResult(openSourceScan, openSourceUrl) };
@@ -232,22 +233,6 @@ namespace SnykGhe.Core.Processing
                 DetailsUrl = detailsUrl,
                 Output = new NewCheckRunOutput(title, summary),
             });
-        }
-
-        private async Task CloneAsync(ScanRequest request, string token, string workDir, CancellationToken cancellationToken)
-        {
-            // GitHub App installation tokens authenticate git over HTTPS as x-access-token.
-            var authUrl = request.CloneUrl.Replace("https://", $"https://x-access-token:{token}@", StringComparison.Ordinal);
-
-            var result = await Cli.Wrap("git")
-                .WithArguments(["clone", "--depth", "1", "--branch", request.HeadRef, authUrl, workDir])
-                .WithValidation(CommandResultValidation.None)
-                .ExecuteBufferedAsync(cancellationToken);
-
-            if (result.ExitCode != 0)
-            {
-                throw new InvalidOperationException($"git clone failed (exit {result.ExitCode}): {result.StandardError.Trim()}");
-            }
         }
 
         private static ProductScanResult ToProductResult(SnykScanResult scan, string? detailsUrl)

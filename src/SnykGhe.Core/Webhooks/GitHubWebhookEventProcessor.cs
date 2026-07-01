@@ -21,6 +21,7 @@ namespace SnykGhe.Core.Webhooks
     public sealed class GitHubWebhookEventProcessor : WebhookEventProcessor
     {
         private readonly PullRequestCheckService _prCheckService;
+        private readonly BaselineScanService _baselineScanService;
         private readonly IGitHubInstallationRegistry _registry;
         private readonly OrgPolicyResolver _policyResolver;
         private readonly SnykProjectCleanupService _cleanupService;
@@ -28,12 +29,14 @@ namespace SnykGhe.Core.Webhooks
 
         public GitHubWebhookEventProcessor(
             PullRequestCheckService prCheckService,
+            BaselineScanService baselineScanService,
             IGitHubInstallationRegistry registry,
             OrgPolicyResolver policyResolver,
             SnykProjectCleanupService cleanupService,
             ILogger<GitHubWebhookEventProcessor> logger)
         {
             this._prCheckService = prCheckService;
+            this._baselineScanService = baselineScanService;
             this._registry = registry;
             this._policyResolver = policyResolver;
             this._cleanupService = cleanupService;
@@ -192,6 +195,45 @@ namespace SnykGhe.Core.Webhooks
                 LogSanitizer.Clean(deleteEvent.Ref), LogSanitizer.Clean(repository.FullName));
 
             await _cleanupService.DeleteBranchProjectsAsync(policy.SnykOrgId, remoteRepoUrl, deleteEvent.Ref, cancellationToken);
+        }
+
+        /// <summary>
+        /// Runs a baseline scan when the default branch is pushed to (typically the commit a merged PR
+        /// produces), re-establishing the durable <c>snyk monitor</c> snapshot Snyk alerts against as new
+        /// vulnerabilities are disclosed. Only the default branch is scanned — PR branches are covered by the
+        /// pull_request scan. Branch/tag creation and deletion also arrive as push events; a deletion carries
+        /// the all-zero SHA and is handled by the delete webhook, so non-default-branch and deletion pushes
+        /// are ignored here.
+        /// </summary>
+        protected override async ValueTask ProcessPushWebhookAsync(
+            WebhookHeaders headers,
+            PushEvent pushEvent,
+            CancellationToken cancellationToken = default)
+        {
+            if (pushEvent.Installation is null ||
+                pushEvent.Repository is not { CloneUrl: { } cloneUrl, DefaultBranch: { } defaultBranch } repository)
+            {
+                _logger.LogWarning("push event missing installation, clone URL, or default branch; ignoring.");
+                return;
+            }
+
+            if (pushEvent.Deleted ||
+                !string.Equals(pushEvent.Ref, $"refs/heads/{defaultBranch}", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            await _baselineScanService.ProcessAsync(
+                new BaselineScanRequest
+                {
+                    InstallationId = pushEvent.Installation.Id,
+                    Owner = repository.Owner.Login,
+                    Repo = repository.Name,
+                    CloneUrl = cloneUrl,
+                    Branch = defaultBranch,
+                    HeadSha = pushEvent.After,
+                },
+                cancellationToken);
         }
 
         protected override async ValueTask ProcessInstallationWebhookAsync(

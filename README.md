@@ -91,6 +91,12 @@ No organization or account permissions are required.
   reference. Tag deletions arrive on the same event and are ignored. Requires **Contents: Read**, already
   granted above. This cleanup calls the Snyk REST API with the OAuth service account, which therefore needs
   the **Remove Projects** (`org.project.delete`) permission — otherwise the deletes are rejected and logged.
+- **Push** — when the **default branch** is pushed to (typically the commit a merged PR produces), runs a
+  baseline scan and `snyk monitor`s the result under the default branch's target reference. This is the
+  durable monitored snapshot Snyk alerts against as new vulnerabilities are disclosed — distinct from the
+  ephemeral per-PR-branch monitoring. Pushes to other branches and tag pushes are ignored. Controlled by
+  `Snyk:ScanDefaultBranch` (on by default); set it `false` to disable. Requires **Contents: Read**, already
+  granted above.
 
 The **installation** and **installation_repositories** events — used to maintain the
 org→installation registry as the App is installed, suspended, or removed — are delivered to every
@@ -139,7 +145,8 @@ All keys bind from `appsettings.json` / environment variables (double-underscore
 | `GitHub:WebhookSecret` | Validates `X-Hub-Signature-256` on every delivery |
 | `Snyk:Token` *or* `Snyk:OAuthClientId`/`Secret` | Snyk CLI authentication (static service-account token, or OAuth client-credentials — the service exchanges those for a short-lived token via `Snyk:OAuthTokenUrl`, default US `https://api.snyk.io/oauth2/token`; override for EU/AU) |
 | `Snyk:DefaultSnykOrgId` / `DefaultSeverityThreshold` / `DefaultEcosystem` | Fallback policy for unmapped orgs |
-| `Snyk:Monitor` | When `true`, also run `snyk monitor` after the gating test so the Check Run's "View more details on Snyk" link points at the scan snapshot in the Snyk Web UI. Off by default — it creates a Snyk project per repository (the PR branch is the target reference). Also drives `--report` publishing for the Code and IaC scans |
+| `Snyk:Monitor` | When `true`, also run `snyk monitor` after a PR's gating test so the Check Run's "View more details on Snyk" link points at the scan snapshot in the Snyk Web UI. Off by default — it creates a short-lived Snyk project per PR (the PR head branch is the target reference). Also drives `--report` publishing for the Code and IaC scans. Does not affect the default-branch baseline (`Snyk:ScanDefaultBranch`) |
+| `Snyk:ScanDefaultBranch` | When `true` (default), a push to a repo's default branch runs a baseline scan and `snyk monitor`s it under the default-branch target reference — the durable snapshot Snyk alerts against as new vulnerabilities are disclosed. Set `false` to disable the push-triggered baseline |
 | `Snyk:ScanCode` / `Snyk:ScanIac` | When `true`, additionally run `snyk code test` (SAST) / `snyk iac test` and publish a separate `sast/snyk` / `iac/snyk` Check Run. Off by default (Snyk Code is separately licensed; IaC needs IaC files). A not-applicable product skips its check |
 | `Storage:Provider` | `AzureTable` or `DynamoDb` |
 | `Storage:AdminApiKey` | Guards the `PUT /api/admin/orgs/{org}` mapping endpoint and the registration flow (closed if unset) |

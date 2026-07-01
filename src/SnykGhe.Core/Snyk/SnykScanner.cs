@@ -101,9 +101,12 @@ namespace SnykGhe.Core.Snyk
             ResolvedPolicy policy,
             string remoteRepoUrl,
             string targetReference,
+            bool forceMonitor,
             CancellationToken cancellationToken)
         {
-            if (!_options.Monitor)
+            // The default-branch baseline forces monitoring; the per-PR-branch path only monitors when the
+            // Snyk:Monitor opt-in is set.
+            if (!forceMonitor && !_options.Monitor)
             {
                 return null;
             }

@@ -85,6 +85,9 @@ namespace SnykGhe.Core.Snyk
                 _logger.LogInformation("Deleted {Count} Snyk project(s) for branch {Ref} on {Repo}.", deleted, branchReference, remoteRepoUrl);
 
                 // If that was the target's last reference, the target is now an empty shell — remove it too.
+                // When default-branch monitoring is enabled the target keeps its default-branch reference, so
+                // this teardown does not fire for an actively-monitored repo — deleting a feature branch leaves
+                // the durable default-branch snapshot intact, which is the intended behavior.
                 if (deleted > 0 && !await TargetHasProjectsAsync(snykOrgId!, targetId, token, cancellationToken))
                 {
                     if (await DeleteTargetAsync(snykOrgId!, targetId, token, cancellationToken))

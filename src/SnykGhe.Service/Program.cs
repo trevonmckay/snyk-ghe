@@ -73,7 +73,9 @@ builder.Services.AddSingleton<SnykScanner>();
 builder.Services.AddSingleton<FixPlanner>();
 builder.Services.AddSingleton<IManifestPatcher, NuGetManifestPatcher>();
 builder.Services.AddSingleton<FixPullRequestService>();
+builder.Services.AddSingleton<RepositoryCloner>();
 builder.Services.AddSingleton<PullRequestCheckService>();
+builder.Services.AddSingleton<BaselineScanService>();
 builder.Services.AddSingleton<WebhookEventProcessor, GitHubWebhookEventProcessor>();
 builder.Services.AddSingleton<WebhookDispatcher>();
 
