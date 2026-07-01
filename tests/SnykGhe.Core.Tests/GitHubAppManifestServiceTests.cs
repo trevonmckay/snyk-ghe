@@ -49,5 +49,18 @@ namespace SnykGhe.Core.Tests
 
             Assert.Equal("https://snyk-ghe.example.com/api/github/webhooks", manifest.HookAttributes.Url);
         }
+
+        [Fact]
+        public void BuildManifest_RequestsTheSubscribedEventsAndPermissions()
+        {
+            // The registration manifest must carry the full event set so a fresh install subscribes to delete
+            // (branch-reference cleanup) as well as pull_request and check_run — GitHub only delivers events
+            // the App is registered for.
+            var manifest = Build().BuildManifest("snyk-ghe", "https://snyk-ghe.example.com/");
+
+            Assert.Equal(GitHubAppDefinition.Events, manifest.DefaultEvents);
+            Assert.Contains("delete", manifest.DefaultEvents);
+            Assert.Same(GitHubAppDefinition.Permissions, manifest.DefaultPermissions);
+        }
     }
 }

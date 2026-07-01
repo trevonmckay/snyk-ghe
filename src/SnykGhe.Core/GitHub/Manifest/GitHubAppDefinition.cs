@@ -25,8 +25,9 @@ namespace SnykGhe.Core.GitHub.Manifest
         /// <list type="bullet">
         /// <item><c>pull_request</c> — scan on opened / synchronize / reopened / ready_for_review; draft PRs are skipped.</item>
         /// <item><c>check_run</c> — re-scan when a user clicks "Re-run" on the Snyk check (rerequested).</item>
+        /// <item><c>delete</c> — remove the Snyk branch reference when its branch is deleted (e.g. after a PR merges).</item>
         /// </list>
         /// </summary>
-        public static readonly IReadOnlyList<string> Events = new[] { "pull_request", "check_run" };
+        public static readonly IReadOnlyList<string> Events = new[] { "pull_request", "check_run", "delete" };
     }
 }

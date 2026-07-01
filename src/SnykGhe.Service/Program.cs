@@ -68,6 +68,7 @@ builder.Services.AddHttpClient(SnykOAuthTokenProvider.HttpClientName);
 builder.Services.AddHttpClient(SnykProjectUrlResolver.HttpClientName);
 builder.Services.AddSingleton<SnykOAuthTokenProvider>();
 builder.Services.AddSingleton<SnykProjectUrlResolver>();
+builder.Services.AddSingleton<SnykProjectCleanupService>();
 builder.Services.AddSingleton<SnykScanner>();
 builder.Services.AddSingleton<FixPlanner>();
 builder.Services.AddSingleton<IManifestPatcher, NuGetManifestPatcher>();

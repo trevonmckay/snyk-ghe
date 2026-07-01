@@ -3,8 +3,11 @@ using Octokit.Webhooks.Events;
 using Octokit.Webhooks.Events.CheckRun;
 using Octokit.Webhooks.Events.Installation;
 using Octokit.Webhooks.Events.PullRequest;
+using Octokit.Webhooks.Models;
+using SnykGhe.Core.Configuration;
 using SnykGhe.Core.Infrastructure;
 using SnykGhe.Core.Processing;
+using SnykGhe.Core.Snyk;
 using SnykGhe.Core.Storage;
 
 namespace SnykGhe.Core.Webhooks
@@ -19,15 +22,21 @@ namespace SnykGhe.Core.Webhooks
     {
         private readonly PullRequestCheckService _prCheckService;
         private readonly IGitHubInstallationRegistry _registry;
+        private readonly OrgPolicyResolver _policyResolver;
+        private readonly SnykProjectCleanupService _cleanupService;
         private readonly ILogger _logger;
 
         public GitHubWebhookEventProcessor(
             PullRequestCheckService prCheckService,
             IGitHubInstallationRegistry registry,
+            OrgPolicyResolver policyResolver,
+            SnykProjectCleanupService cleanupService,
             ILogger<GitHubWebhookEventProcessor> logger)
         {
             this._prCheckService = prCheckService;
             this._registry = registry;
+            this._policyResolver = policyResolver;
+            this._cleanupService = cleanupService;
             this._logger = logger;
         }
 
@@ -139,6 +148,50 @@ namespace SnykGhe.Core.Webhooks
 
             _logger.LogInformation("Scanning {Owner}/{Repo} PR #{Pr}", request.Owner, request.Repo, request.PrNumber);
             await _prCheckService.ProcessAsync(request, cancellationToken);
+        }
+
+        /// <summary>
+        /// Cleans up Snyk when a branch is deleted. Each PR scan publishes a Snyk branch reference (via
+        /// <c>snyk monitor --target-reference</c>); GitHub auto-deletes the branch once the PR closes, which
+        /// would otherwise leave that reference orphaned. Tag deletions carry the same event but no Snyk
+        /// projects, so they are ignored. Best-effort — a cleanup failure never surfaces to GitHub.
+        /// </summary>
+        protected override async ValueTask ProcessDeleteWebhookAsync(
+            WebhookHeaders headers,
+            DeleteEvent deleteEvent,
+            CancellationToken cancellationToken = default)
+        {
+            if (deleteEvent.RefType != RefType.Branch)
+            {
+                return;
+            }
+
+            if (deleteEvent.Repository is not { CloneUrl: { } cloneUrl } repository)
+            {
+                _logger.LogWarning("delete event missing repository clone URL; skipping Snyk cleanup.");
+                return;
+            }
+
+            var gitHubOrg = repository.Owner.Login;
+            var policy = await _policyResolver.ResolveAsync(gitHubOrg, cancellationToken);
+
+            if (policy.Suspended)
+            {
+                _logger.LogInformation("Installation for {Org} is suspended; skipping Snyk cleanup.", LogSanitizer.Clean(gitHubOrg));
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(policy.SnykOrgId))
+            {
+                _logger.LogInformation("No Snyk org mapped for {Org}; skipping Snyk cleanup.", LogSanitizer.Clean(gitHubOrg));
+                return;
+            }
+
+            var remoteRepoUrl = ScanRequest.NormalizeRemoteRepoUrl(cloneUrl);
+            _logger.LogInformation("Branch {Ref} deleted on {Repo}; cleaning up Snyk projects.",
+                LogSanitizer.Clean(deleteEvent.Ref), LogSanitizer.Clean(repository.FullName));
+
+            await _cleanupService.DeleteBranchProjectsAsync(policy.SnykOrgId, remoteRepoUrl, deleteEvent.Ref, cancellationToken);
         }
 
         protected override async ValueTask ProcessInstallationWebhookAsync(

@@ -86,6 +86,11 @@ No organization or account permissions are required.
   actions. Draft PRs are not scanned; a PR opened as a draft is first scanned when it is marked ready for review.
 - **Check run** — re-runs the scan when a user clicks **Re-run** on the Snyk check (the `rerequested`
   action). GitHub delivers this only to the App that owns the check run, so it always targets our own check.
+- **Delete** — when a branch is deleted (typically the automatic deletion after a PR merges), removes the
+  Snyk branch reference that the PR scan published, and the repository's Snyk target if that was its last
+  reference. Tag deletions arrive on the same event and are ignored. Requires **Contents: Read**, already
+  granted above. This cleanup calls the Snyk REST API with the OAuth service account, which therefore needs
+  the **Remove Projects** (`org.project.delete`) permission — otherwise the deletes are rejected and logged.
 
 The **installation** and **installation_repositories** events — used to maintain the
 org→installation registry as the App is installed, suspended, or removed — are delivered to every

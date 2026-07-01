@@ -22,7 +22,14 @@ namespace SnykGhe.Core.Processing
         /// this value verbatim as the target name, so a <c>.git</c> suffix surfaces as a confusing
         /// <c>owner/repo.git</c> target in the UI — distinct from the <c>owner/repo</c> target other tools create.
         /// </summary>
-        public string RemoteRepoUrl =>
-            CloneUrl.EndsWith(".git", StringComparison.OrdinalIgnoreCase) ? CloneUrl[..^4] : CloneUrl;
+        public string RemoteRepoUrl => NormalizeRemoteRepoUrl(CloneUrl);
+
+        /// <summary>
+        /// Strips a trailing <c>.git</c> so a clone URL matches the target name Snyk stores from
+        /// <c>--remote-repo-url</c>. Shared with branch-deletion cleanup, which resolves the same target
+        /// from a webhook's repository clone URL.
+        /// </summary>
+        public static string NormalizeRemoteRepoUrl(string cloneUrl) =>
+            cloneUrl.EndsWith(".git", StringComparison.OrdinalIgnoreCase) ? cloneUrl[..^4] : cloneUrl;
     }
 }
