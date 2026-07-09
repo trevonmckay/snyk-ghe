@@ -1,0 +1,54 @@
+name: Feature request
+description: Propose a capability this App doesn't have yet
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check the [README](https://github.com/trevonmckay/snyk-ghe#readme) first — several
+        capabilities exist but ship disabled (`Snyk:ScanCode`, `Snyk:ScanIac`, `Snyk:Monitor`).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the situation you're in, not the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like it to do?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area does this touch?
+      multiple: true
+      options:
+        - Scanning — a new Snyk product or CLI flag
+        - Ecosystems — a manifest patcher beyond NuGet
+        - Check runs and PR comments
+        - Fix pull requests
+        - Registry / org-to-Snyk-org mapping
+        - Admin or registration endpoints
+        - Deployment templates (Azure or AWS)
+        - Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Including whether existing configuration already gets you close.
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I'd be willing to open a pull request for this

@@ -1,0 +1,109 @@
+name: Bug report
+description: Something the App does wrong — a missing check run, a bad comment, a scan that never happens
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug.
+
+        **Do not report security vulnerabilities here.** Use [private vulnerability
+        reporting](https://github.com/trevonmckay/snyk-ghe/security/advisories/new) instead.
+
+        **Redact before you paste.** Logs and screenshots from this App routinely contain enterprise
+        hostnames, organization names, installation IDs, and tokens. Scrub them.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect the App to do, and what did it do instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a PR against a repo with a vulnerable NuGet package
+        2. The `sca/snyk` check run appears and stays in_progress
+        3. ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: trigger
+    attributes:
+      label: Which webhook event was involved?
+      options:
+        - pull_request (PR scan)
+        - check_run (Re-run clicked)
+        - push (default-branch baseline scan)
+        - delete (branch cleanup)
+        - installation / installation_repositories (registry)
+        - Not sure / not webhook-driven
+    validations:
+      required: true
+
+  - type: dropdown
+    id: product
+    attributes:
+      label: Which Snyk product?
+      multiple: true
+      options:
+        - Open source — sca/snyk
+        - Code / SAST — sast/snyk
+        - Infrastructure as Code — iac/snyk
+        - Fix pull requests
+        - Not product-specific
+    validations:
+      required: true
+
+  - type: dropdown
+    id: topology
+    attributes:
+      label: Deployment topology
+      options:
+        - Azure — always-on Container App (.azure/main.bicep)
+        - Azure — Function front door, scale-to-zero (.azure/main-functions.bicep)
+        - AWS — App Runner (.aws/main.yaml)
+        - Local (dotnet run, in-process queue)
+        - Other / custom
+    validations:
+      required: true
+
+  - type: dropdown
+    id: storage
+    attributes:
+      label: Storage provider
+      options:
+        - AzureTable
+        - DynamoDb
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The commit SHA or image tag you're running.
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: >
+        Non-secret keys that bear on the issue — for example `Snyk:ScanCode`, `Snyk:Monitor`,
+        `Snyk:ScanDefaultBranch`, `Snyk:CoalesceBaselineScans`, `Snyk:DefaultSeverityThreshold`.
+        Never paste tokens, private keys, the webhook secret, or the admin API key.
+      render: text
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Redacted service logs from around the failure.
+      render: text
