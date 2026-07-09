@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".editorconfig" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/SnykGhe.Contracts/SnykGhe.Contracts.csproj" />
+    <Project Path="src/SnykGhe.Core/SnykGhe.Core.csproj" />
+    <Project Path="src/SnykGhe.Functions/SnykGhe.Functions.csproj" />
+    <Project Path="src/SnykGhe.Service/SnykGhe.Service.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SnykGhe.Core.Tests/SnykGhe.Core.Tests.csproj" />
+  </Folder>
+</Solution>

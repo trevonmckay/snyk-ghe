@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/trevonmckay/snyk-ghe/security/advisories/new
+    about: Report privately through a draft security advisory. Never in a public issue.
+  - name: Snyk platform or Snyk CLI problem
+    url: https://support.snyk.io/
+    about: This is an independent project that uses the Snyk CLI. Issues with Snyk itself belong with Snyk.
+  - name: GitHub platform problem
+    url: https://support.github.com/
+    about: Issues with GitHub Enterprise Cloud or the GitHub REST API belong with GitHub.
