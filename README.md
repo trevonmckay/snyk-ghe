@@ -204,10 +204,42 @@ host per installation.
 
 ## Deploy
 
-- **Azure:** two topologies, both Container Apps + Service Bus + Table Storage + Key Vault —
-  `.azure/main.bicep` (always-on) or `.azure/main-functions.bicep` (Azure Function front door, processing
-  scales to zero). See `.azure/README.md`.
-- **AWS:** `.aws/main.yaml` (App Runner + DynamoDB + Secrets Manager). See `.aws/README.md`.
+Infrastructure-as-code templates for **Azure** and **AWS** ship with the repository, so you can stand
+up a working deployment without assembling the resource graph yourself. Pick a cloud and a topology:
+
+| Template | Cloud | Shape |
+| --- | --- | --- |
+| `.azure/main.bicep` | Azure | Always-on Container App (1–10 replicas), Service Bus, Table Storage, Key Vault, ACR |
+| `.azure/main-functions.bicep` | Azure | Azure Function webhook front door; the processing Container App scales to zero (0–10 replicas) |
+| `.aws/main.yaml` | AWS | App Runner, DynamoDB, SQS + dead-letter queue, Secrets Manager |
+
+Each directory has its own README with the deploy commands, the RBAC each template grants, and how
+secrets are handled — which differs by cloud. The Azure templates deliberately **do not** seed the
+GitHub App private key or webhook secret; the [registration flow](#automated-registration-optional)
+writes them at runtime, so a redeploy cannot clobber them. The AWS template takes both as `NoEcho`
+CloudFormation parameters instead.
+
+> **These are a starting point, not a production blueprint.** They're sized and shaped to get an
+> adopter running quickly, and most environments will want to change them. In particular:
+>
+> - **The container image parameter defaults to a placeholder** (`mcr.microsoft.com/k8se/quickstart`).
+>   Build and push this app's image to your own registry and pass it in, or the deployment comes up
+>   serving the wrong thing.
+> - **Ingress is public.** GitHub has to reach the webhook endpoint, but the admin and registration
+>   routes are exposed on the same host, guarded only by a shared key. Front them with your identity
+>   provider (Entra ID / Easy Auth, or equivalent), restrict ingress, or leave `Storage:AdminApiKey`
+>   unset to close them entirely.
+> - **Scaling, SKUs, and retention are guesses.** Replica bounds, the Service Bus and SQS tiers, queue
+>   lock and visibility timeouts, and log retention are all set to reasonable defaults for a small
+>   installation, not tuned to your traffic. A scan can run for minutes, so queue timeouts and
+>   `Snyk:ScanLeaseMinutes` need to stay comfortably longer than your slowest repository.
+> - **Networking, naming, and tagging follow no house convention.** Resource names derive from a
+>   `baseName` parameter; there is no private networking, no custom domain, and no tag policy.
+> - **No deployment pipeline is included.** `.github/workflows/` is empty — the templates are meant to
+>   be run from your own CI or by hand.
+>
+> Treat them as a reference you fork and adapt, and review them against your organization's cloud
+> policies before you run them.
 
 ## Build & test
 
@@ -216,7 +248,21 @@ dotnet build      # also runs the enforced code-style rules
 dotnet test
 ```
 
-See [CLAUDE.md](CLAUDE.md) for coding conventions.
+There is no CI, so run both locally before opening a pull request.
+
+## Contributing
+
+Bug reports and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for prerequisites,
+the local run loop, and the enforced coding conventions. Participation is governed by the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Security
+
+A deployment of this App holds a GitHub App private key, a webhook secret, a Snyk service-account
+credential, and an admin API key — together enough to write to every organization that installs it.
+Please report vulnerabilities privately through
+[GitHub's private vulnerability reporting](https://github.com/trevonmckay/snyk-ghe/security/advisories/new),
+never in a public issue. See [SECURITY.md](SECURITY.md) for scope and what we most want to hear about.
 
 ## License
 

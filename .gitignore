@@ -22,6 +22,9 @@ local.settings.json
 ## Local Bicep params (may contain secrets)
 .azure/*.local.bicepparam
 
+## Local runbooks — may contain subscription ids, resource names, deploy logs
+*.local.md
+
 ## Local tooling
 .claude/settings.local.json
 .playwright-mcp/
