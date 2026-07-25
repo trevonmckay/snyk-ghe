@@ -3,6 +3,7 @@
     <File Path=".editorconfig" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/Snyk.Client/Snyk.Client.csproj" />
     <Project Path="src/SnykGhe.Contracts/SnykGhe.Contracts.csproj" />
     <Project Path="src/SnykGhe.Core/SnykGhe.Core.csproj" />
     <Project Path="src/SnykGhe.Functions/SnykGhe.Functions.csproj" />

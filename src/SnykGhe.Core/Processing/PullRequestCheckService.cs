@@ -15,7 +15,10 @@ namespace SnykGhe.Core.Processing
     public sealed class PullRequestCheckService
     {
         private readonly GitHubClientFactory _clientFactory;
-        private readonly SnykScanner _scanner;
+        private readonly IOpenSourceScanner _openSourceScanner;
+        private readonly ICodeScanner _codeScanner;
+        private readonly IIacScanner _iacScanner;
+        private readonly SnykMonitor _monitor;
         private readonly SnykProjectUrlResolver _projectUrlResolver;
         private readonly OrgPolicyResolver _policyResolver;
         private readonly FixPullRequestService _prFixService;
@@ -26,7 +29,10 @@ namespace SnykGhe.Core.Processing
 
         public PullRequestCheckService(
             GitHubClientFactory clientFactory,
-            SnykScanner scanner,
+            IOpenSourceScanner openSourceScanner,
+            ICodeScanner codeScanner,
+            IIacScanner iacScanner,
+            SnykMonitor monitor,
             SnykProjectUrlResolver projectUrlResolver,
             OrgPolicyResolver policyResolver,
             FixPullRequestService fixService,
@@ -36,7 +42,10 @@ namespace SnykGhe.Core.Processing
             ILogger<PullRequestCheckService> logger)
         {
             _clientFactory = clientFactory;
-            _scanner = scanner;
+            _openSourceScanner = openSourceScanner;
+            _codeScanner = codeScanner;
+            _iacScanner = iacScanner;
+            _monitor = monitor;
             _projectUrlResolver = projectUrlResolver;
             _policyResolver = policyResolver;
             _prFixService = fixService;
@@ -86,22 +95,31 @@ namespace SnykGhe.Core.Processing
 
                 await _cloner.CloneAsync(request.CloneUrl, request.HeadRef, credentials.Token, workDir, cancellationToken);
 
+                var projectName = $"{request.Owner}/{request.Repo}";
+                var context = new ScanContext
+                {
+                    WorkingDirectory = workDir,
+                    Policy = policy,
+                    RemoteRepoUrl = request.RemoteRepoUrl,
+                    TargetReference = request.HeadRef,
+                    ProjectName = projectName,
+                    Publish = _snyk.Monitor,
+                };
+
                 // Open Source (always on). Its raw result also drives fix PRs, so keep it alongside the
                 // normalized form used for the Check Run.
-                var openSourceScan = await _scanner.ScanAsync(workDir, policy, cancellationToken);
+                var openSourceScan = await _openSourceScanner.ScanAsync(context, cancellationToken);
                 string? openSourceUrl = null;
                 if (!openSourceScan.Failed)
                 {
-                    openSourceUrl = await _scanner.MonitorAsync(workDir, policy, request.RemoteRepoUrl, request.HeadRef, forceMonitor: false, cancellationToken);
+                    openSourceUrl = await _monitor.MonitorAsync(context, forceMonitor: false, cancellationToken);
                 }
 
                 var results = new List<ProductScanResult> { ToProductResult(openSourceScan, openSourceUrl) };
 
-                var projectName = $"{request.Owner}/{request.Repo}";
-
                 if (_snyk.ScanCode)
                 {
-                    var codeResult = await _scanner.ScanCodeAsync(workDir, policy, _snyk.Monitor, projectName, request.RemoteRepoUrl, request.HeadRef, cancellationToken);
+                    var codeResult = await _codeScanner.ScanAsync(context, cancellationToken);
 
                     // `snyk code test --report` publishes the snapshot but, unlike `snyk monitor`, does not
                     // return its URL in --json output; look it up so the Code row can deep-link.
@@ -119,7 +137,7 @@ namespace SnykGhe.Core.Processing
 
                 if (_snyk.ScanIac)
                 {
-                    results.Add(await _scanner.ScanIacAsync(workDir, policy, _snyk.Monitor, projectName, request.RemoteRepoUrl, request.HeadRef, cancellationToken));
+                    results.Add(await _iacScanner.ScanAsync(context, cancellationToken));
                 }
 
                 // One Check Run per enabled product. A not-applicable product (nothing to scan / not enabled)

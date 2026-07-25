@@ -1,8 +1,7 @@
 using System.Collections.Concurrent;
-using System.Net.Http.Headers;
-using System.Text.Json;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Snyk.Client;
+using Snyk.Client.Resources;
 using SnykGhe.Core.Configuration;
 
 namespace SnykGhe.Core.Snyk
@@ -11,18 +10,12 @@ namespace SnykGhe.Core.Snyk
     /// Resolves a published Snyk project's Web UI link via the Snyk REST API. Unlike <c>snyk monitor</c>
     /// (whose <c>--json</c> output carries a snapshot <c>uri</c>), <c>snyk code test --report --json</c>
     /// emits only SARIF — the report URL the CLI computes is dropped in JSON mode — so the Code Check Run has
-    /// no deep link without this lookup. Best-effort: every failure (no org mapping, no OAuth, project not yet
-    /// queryable, any API error) yields null and the summary row falls back to a plain issue count.
+    /// no deep link without this lookup. Best-effort: every failure (no org mapping, no credentials, project
+    /// not yet queryable, any API error) yields null and the summary row falls back to a plain issue count.
     /// </summary>
     public sealed class SnykProjectUrlResolver
     {
-        public const string HttpClientName = "snyk-rest";
-
-        // Snyk REST API is JSON:API; requests and responses use the vnd.api+json media type.
-        private const string JsonApiMediaType = "application/vnd.api+json";
-
-        private readonly IHttpClientFactory _httpClientFactory;
-        private readonly SnykOAuthTokenProvider _oauthTokenProvider;
+        private readonly SnykApiClient _client;
         private readonly SnykOptions _options;
         private readonly ILogger<SnykProjectUrlResolver> _logger;
 
@@ -30,13 +23,11 @@ namespace SnykGhe.Core.Snyk
         private readonly ConcurrentDictionary<string, string> _orgSlugCache;
 
         public SnykProjectUrlResolver(
-            IHttpClientFactory httpClientFactory,
-            SnykOAuthTokenProvider oauthTokenProvider,
+            SnykApiClient client,
             IOptions<SnykOptions> options,
             ILogger<SnykProjectUrlResolver> logger)
         {
-            _httpClientFactory = httpClientFactory;
-            _oauthTokenProvider = oauthTokenProvider;
+            _client = client;
             _options = options.Value;
             _logger = logger;
             _orgSlugCache = new ConcurrentDictionary<string, string>();
@@ -54,7 +45,7 @@ namespace SnykGhe.Core.Snyk
             ResolvedPolicy policy,
             CancellationToken cancellationToken)
         {
-            if (string.IsNullOrWhiteSpace(policy.SnykOrgId) || !_oauthTokenProvider.IsConfigured)
+            if (string.IsNullOrWhiteSpace(policy.SnykOrgId))
             {
                 return null;
             }
@@ -67,17 +58,27 @@ namespace SnykGhe.Core.Snyk
 
             try
             {
-                var token = await _oauthTokenProvider.GetAccessTokenAsync(cancellationToken);
+                // Filter by type as well as name: the Open Source `snyk monitor` publishes a project with the
+                // same owner/repo name, so name alone would be ambiguous.
+                var projects = await _client.Projects.ListAsync(
+                    policy.SnykOrgId!,
+                    new SnykProjectFilter
+                    {
+                        Name = projectName,
+                        Types = projectType,
+                        TargetReference = string.IsNullOrWhiteSpace(targetReference) ? null : targetReference,
+                    },
+                    cancellationToken);
 
-                var projectId = await FindProjectIdAsync(policy.SnykOrgId!, projectName, targetReference, projectType, token, cancellationToken);
-                if (projectId is null)
+                var projectId = projects.FirstOrDefault()?.Id;
+                if (string.IsNullOrWhiteSpace(projectId))
                 {
                     _logger.LogInformation("No Snyk {Type} project found for {Project} ({Ref}); check will have no Snyk link.",
                         projectType, projectName, targetReference);
                     return null;
                 }
 
-                var slug = await GetOrgSlugAsync(policy.SnykOrgId!, token, cancellationToken);
+                var slug = await GetOrgSlugAsync(policy.SnykOrgId!, cancellationToken);
                 if (string.IsNullOrWhiteSpace(slug))
                 {
                     return null;
@@ -93,62 +94,15 @@ namespace SnykGhe.Core.Snyk
             }
         }
 
-        private async Task<string?> FindProjectIdAsync(
-            string orgId,
-            string projectName,
-            string targetReference,
-            string projectType,
-            string token,
-            CancellationToken cancellationToken)
-        {
-            // Filter by type as well as name: the Open Source `snyk monitor` publishes a project with the same
-            // owner/repo name, so name alone would be ambiguous.
-            var query = $"version={Uri.EscapeDataString(_options.RestApiVersion)}" +
-                $"&names={Uri.EscapeDataString(projectName)}" +
-                $"&types={Uri.EscapeDataString(projectType)}" +
-                "&limit=10";
-
-            if (!string.IsNullOrWhiteSpace(targetReference))
-            {
-                query += $"&target_reference={Uri.EscapeDataString(targetReference)}";
-            }
-
-            var url = $"{ApiBase}/rest/orgs/{Uri.EscapeDataString(orgId)}/projects?{query}";
-
-            using var doc = await GetJsonAsync(url, token, cancellationToken);
-            if (doc is null || !doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
-            {
-                return null;
-            }
-
-            foreach (var item in data.EnumerateArray())
-            {
-                if (item.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String)
-                {
-                    return id.GetString();
-                }
-            }
-
-            return null;
-        }
-
-        private async Task<string?> GetOrgSlugAsync(string orgId, string token, CancellationToken cancellationToken)
+        private async Task<string?> GetOrgSlugAsync(string orgId, CancellationToken cancellationToken)
         {
             if (_orgSlugCache.TryGetValue(orgId, out var cached))
             {
                 return cached;
             }
 
-            var url = $"{ApiBase}/rest/orgs/{Uri.EscapeDataString(orgId)}?version={Uri.EscapeDataString(_options.RestApiVersion)}";
-
-            using var doc = await GetJsonAsync(url, token, cancellationToken);
-            var slug = doc is not null
-                && doc.RootElement.TryGetProperty("data", out var data)
-                && data.TryGetProperty("attributes", out var attributes)
-                && attributes.TryGetProperty("slug", out var slugElement)
-                && slugElement.ValueKind == JsonValueKind.String
-                ? slugElement.GetString()
-                : null;
+            var org = await _client.Orgs.GetAsync(orgId, cancellationToken);
+            var slug = org?.Slug;
 
             if (!string.IsNullOrWhiteSpace(slug))
             {
@@ -157,28 +111,6 @@ namespace SnykGhe.Core.Snyk
 
             return slug;
         }
-
-        private async Task<JsonDocument?> GetJsonAsync(string url, string token, CancellationToken cancellationToken)
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(JsonApiMediaType));
-
-            var http = _httpClientFactory.CreateClient(HttpClientName);
-            using var response = await http.SendAsync(request, cancellationToken);
-
-            if (!response.IsSuccessStatusCode)
-            {
-                var body = await response.Content.ReadAsStringAsync(cancellationToken);
-                _logger.LogWarning("Snyk REST call to {Url} failed ({Status}): {Body}", url, (int)response.StatusCode, body.Trim());
-                return null;
-            }
-
-            var json = await response.Content.ReadAsStringAsync(cancellationToken);
-            return string.IsNullOrWhiteSpace(json) ? null : JsonDocument.Parse(json);
-        }
-
-        private string ApiBase => _options.ApiBaseUrl.TrimEnd('/');
 
         // Only Snyk Code is mapped: its project type is the single value `sast`. Snyk IaC uses granular,
         // per-format project types, so it is intentionally left unmapped until those are confirmed.

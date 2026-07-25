@@ -81,8 +81,8 @@ namespace SnykGhe.Core.Tests
             var factory = new StubHttpClientFactory(handler);
             var opts = options ?? new SnykOptions { OAuthClientId = "id", OAuthClientSecret = "secret" };
 
-            var tokenProvider = new SnykOAuthTokenProvider(factory, Options.Create(opts), NullLogger<SnykOAuthTokenProvider>.Instance);
-            var resolver = new SnykProjectUrlResolver(factory, tokenProvider, Options.Create(opts), NullLogger<SnykProjectUrlResolver>.Instance);
+            var client = SnykApiClientFactory.Create(factory, opts);
+            var resolver = new SnykProjectUrlResolver(client, Options.Create(opts), NullLogger<SnykProjectUrlResolver>.Instance);
             return (resolver, handler);
         }
 
@@ -108,7 +108,7 @@ namespace SnykGhe.Core.Tests
             Assert.Contains("types=sast", query);
             Assert.Contains("names=acme%2Fwidget", query);
             Assert.Contains("target_reference=feature%2Fx", query);
-            Assert.Contains("version=2024-10-15", query);
+            Assert.Contains($"version={new SnykOptions().RestApiVersion}", query);
             Assert.Equal("Bearer", projectsRequest.Headers.Authorization!.Scheme);
             Assert.Equal("tok-123", projectsRequest.Headers.Authorization.Parameter);
         }

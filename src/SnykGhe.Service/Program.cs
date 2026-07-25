@@ -66,12 +66,7 @@ else
 builder.Services.AddHostedService<GitHubInstallationRegistryInitializer>();
 builder.Services.AddSingleton<GitHubClientFactory>();
 builder.Services.AddSingleton<OrgPolicyResolver>();
-builder.Services.AddHttpClient(SnykOAuthTokenProvider.HttpClientName);
-builder.Services.AddHttpClient(SnykProjectUrlResolver.HttpClientName);
-builder.Services.AddSingleton<SnykOAuthTokenProvider>();
-builder.Services.AddSingleton<SnykProjectUrlResolver>();
-builder.Services.AddSingleton<SnykProjectCleanupService>();
-builder.Services.AddSingleton<SnykScanner>();
+builder.Services.AddSnykScanning(builder.Configuration);
 builder.Services.AddSingleton<FixPlanner>();
 builder.Services.AddSingleton<IManifestPatcher, NuGetManifestPatcher>();
 builder.Services.AddSingleton<FixPullRequestService>();

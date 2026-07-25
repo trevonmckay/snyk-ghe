@@ -38,7 +38,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Snyk.Client\Snyk.Client.csproj" />
     <ProjectReference Include="..\SnykGhe.Contracts\SnykGhe.Contracts.csproj" />
+  </ItemGroup>
+
+  <!-- Parsers and startup validation are implementation details, but they carry the logic most worth
+       testing directly; expose them to the test assembly rather than widening the public surface. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="SnykGhe.Core.Tests" />
   </ItemGroup>
 
 </Project>
