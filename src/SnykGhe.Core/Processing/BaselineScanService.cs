@@ -18,7 +18,10 @@ namespace SnykGhe.Core.Processing
         private readonly GitHubClientFactory _clientFactory;
         private readonly OrgPolicyResolver _policyResolver;
         private readonly RepositoryCloner _cloner;
-        private readonly SnykScanner _scanner;
+        private readonly IOpenSourceScanner _openSourceScanner;
+        private readonly ICodeScanner _codeScanner;
+        private readonly IIacScanner _iacScanner;
+        private readonly SnykMonitor _monitor;
         private readonly ScanCoalescer _coalescer;
         private readonly SnykOptions _snyk;
         private readonly ILogger _logger;
@@ -27,7 +30,10 @@ namespace SnykGhe.Core.Processing
             GitHubClientFactory clientFactory,
             OrgPolicyResolver policyResolver,
             RepositoryCloner cloner,
-            SnykScanner scanner,
+            IOpenSourceScanner openSourceScanner,
+            ICodeScanner codeScanner,
+            IIacScanner iacScanner,
+            SnykMonitor monitor,
             ScanCoalescer coalescer,
             IOptions<SnykOptions> snykOptions,
             ILogger<BaselineScanService> logger)
@@ -35,7 +41,10 @@ namespace SnykGhe.Core.Processing
             _clientFactory = clientFactory;
             _policyResolver = policyResolver;
             _cloner = cloner;
-            _scanner = scanner;
+            _openSourceScanner = openSourceScanner;
+            _codeScanner = codeScanner;
+            _iacScanner = iacScanner;
+            _monitor = monitor;
             _coalescer = coalescer;
             _snyk = snykOptions.Value;
             _logger = logger;
@@ -72,9 +81,21 @@ namespace SnykGhe.Core.Processing
                 await _cloner.CloneAsync(request.CloneUrl, request.Branch, credentials.Token, workDir, cancellationToken);
                 var scannedSha = await _cloner.ResolveHeadShaAsync(workDir, cancellationToken);
 
+                // Keep the default branch's SAST / IaC snapshots current too, when those products are enabled.
+                // publish:true so each --report attaches to the same default-branch target reference.
+                var context = new ScanContext
+                {
+                    WorkingDirectory = workDir,
+                    Policy = policy,
+                    RemoteRepoUrl = request.RemoteRepoUrl,
+                    TargetReference = request.Branch,
+                    ProjectName = $"{request.Owner}/{request.Repo}",
+                    Publish = true,
+                };
+
                 // Open Source is always on. Monitor is forced regardless of Snyk:Monitor: persisting the
                 // default-branch snapshot is the entire purpose of this scan.
-                var openSourceScan = await _scanner.ScanAsync(workDir, policy, cancellationToken);
+                var openSourceScan = await _openSourceScanner.ScanAsync(context, cancellationToken);
                 if (openSourceScan.Failed)
                 {
                     _logger.LogWarning("Baseline Open Source scan of {Owner}/{Repo}@{Branch} failed; not monitoring: {Message}",
@@ -82,21 +103,17 @@ namespace SnykGhe.Core.Processing
                 }
                 else
                 {
-                    await _scanner.MonitorAsync(workDir, policy, request.RemoteRepoUrl, request.Branch, forceMonitor: true, cancellationToken);
+                    await _monitor.MonitorAsync(context, forceMonitor: true, cancellationToken);
                 }
-
-                // Keep the default branch's SAST / IaC snapshots current too, when those products are enabled.
-                // publish:true so each --report attaches to the same default-branch target reference.
-                var projectName = $"{request.Owner}/{request.Repo}";
 
                 if (_snyk.ScanCode)
                 {
-                    await _scanner.ScanCodeAsync(workDir, policy, publish: true, projectName, request.RemoteRepoUrl, request.Branch, cancellationToken);
+                    await _codeScanner.ScanAsync(context, cancellationToken);
                 }
 
                 if (_snyk.ScanIac)
                 {
-                    await _scanner.ScanIacAsync(workDir, policy, publish: true, projectName, request.RemoteRepoUrl, request.Branch, cancellationToken);
+                    await _iacScanner.ScanAsync(context, cancellationToken);
                 }
 
                 _logger.LogInformation("Baseline scan of {Owner}/{Repo} default branch {Branch} ({Sha}) complete.",

@@ -45,8 +45,23 @@ namespace SnykGhe.Core.Configuration
         /// <summary>
         /// Snyk REST API version (date-stamped) sent as the required <c>version</c> query parameter. Pinned so
         /// a server-side default change cannot alter response shapes; bump when adopting a newer GA version.
+        /// Must be GA: the Test API is not served on <c>~beta</c> or <c>~experimental</c>, which 404 an
+        /// otherwise valid request.
         /// </summary>
-        public string RestApiVersion { get; set; } = "2024-10-15";
+        public string RestApiVersion { get; set; } = "2026-03-25";
+
+        /// <summary>
+        /// Which engine runs each Snyk product. Cutting a product over to the API is a configuration change;
+        /// see <see cref="ScanEngineOptions"/> for the products the API can actually serve.
+        /// </summary>
+        public ScanEngineOptions Engines { get; set; } = new();
+
+        /// <summary>
+        /// Snyk SCM integration id (Settings &gt; Integrations &gt; &lt;your SCM&gt; &gt; Integration ID). Required by the
+        /// API-backed Code scan, which reads repository source through the integration rather than from the
+        /// checked-out working copy. Unused by the CLI engine.
+        /// </summary>
+        public string? ScmIntegrationId { get; set; }
 
         /// <summary>Default Snyk org id for GitHub orgs without an explicit mapping.</summary>
         public string? DefaultSnykOrgId { get; set; }

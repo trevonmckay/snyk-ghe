@@ -9,6 +9,8 @@ pluggable registry (Azure Table Storage or AWS DynamoDB).
 ## Layout
 
 - `SnykGhe.slnx` at the root; application projects in `src/`, test projects in `tests/`.
+- `src/Snyk.Client/` — a standalone, reusable client for the Snyk REST API (Test/Orgs/Projects/Targets).
+  It models the API rather than this app's use of it, and must not reference any `SnykGhe.*` project.
 - `.azure/` — Azure Bicep: `main.bicep` (always-on Container App) and `main-functions.bicep`
   (Azure Function front door + scale-to-zero processing); `.aws/` — AWS CloudFormation (`main.yaml`).
 

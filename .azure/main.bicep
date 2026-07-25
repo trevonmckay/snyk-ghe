@@ -37,6 +37,20 @@ param snykScanCode bool = false
 @description('When true, run `snyk iac test` and publish a separate iac/snyk Check Run. Repos with no IaC files skip the check.')
 param snykScanIac bool = false
 
+// Each scanner picks its engine independently so a product can be moved to the Test API, or rolled back,
+// without touching the others. IaC has no engine parameter: Snyk's Test API accepts an `iac` scan config
+// but no resource type feeds it a scan component, so the app rejects Snyk:Engines:Iac=Api at startup.
+@description('Engine for the Open Source (SCA) scan. Api submits dependency graphs to the Snyk Test API; Cli runs `snyk test`.')
+@allowed(['Cli', 'Api'])
+param snykEngineOpenSource string = 'Cli'
+
+@description('Engine for the Code (SAST) scan. Api requires snykScmIntegrationId and repositories imported through that SCM integration.')
+@allowed(['Cli', 'Api'])
+param snykEngineCode string = 'Cli'
+
+@description('Snyk SCM integration id (GET /v1/org/{orgId}/integrations). Required when snykEngineCode is Api: the API-backed Code scan reads source through the integration, so repositories imported by the CLI are not visible to it.')
+param snykScmIntegrationId string = ''
+
 // --- Secrets (written to Key Vault) ---
 // The GitHub App private key and webhook secret are NOT deploy inputs: the manifest-registration flow
 // (/api/github/app/register) generates them and writes them to Key Vault at runtime. The app reads them
@@ -302,6 +316,9 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
             { name: 'Snyk__Monitor', value: string(snykMonitor) }
             { name: 'Snyk__ScanCode', value: string(snykScanCode) }
             { name: 'Snyk__ScanIac', value: string(snykScanIac) }
+            { name: 'Snyk__Engines__OpenSource', value: snykEngineOpenSource }
+            { name: 'Snyk__Engines__Code', value: snykEngineCode }
+            { name: 'Snyk__ScmIntegrationId', value: snykScmIntegrationId }
             { name: 'Storage__TableServiceUri', value: storage.properties.primaryEndpoints.table }
             { name: 'Storage__TableName', value: 'installations' }
             { name: 'Storage__AdminApiKey', secretRef: 'admin-api-key' }

@@ -28,3 +28,6 @@ local.settings.json
 ## Local tooling
 .claude/settings.local.json
 .playwright-mcp/
+
+## Support-ticket drafts — contain internal org/target/service-account ids
+tickets/

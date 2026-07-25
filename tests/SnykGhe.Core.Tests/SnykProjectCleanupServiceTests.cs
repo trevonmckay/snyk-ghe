@@ -104,8 +104,8 @@ namespace SnykGhe.Core.Tests
             var factory = new StubHttpClientFactory(handler);
             var opts = options ?? new SnykOptions { OAuthClientId = "id", OAuthClientSecret = "secret" };
 
-            var tokenProvider = new SnykOAuthTokenProvider(factory, Options.Create(opts), NullLogger<SnykOAuthTokenProvider>.Instance);
-            var service = new SnykProjectCleanupService(factory, tokenProvider, Options.Create(opts), NullLogger<SnykProjectCleanupService>.Instance);
+            var client = SnykApiClientFactory.Create(factory, opts);
+            var service = new SnykProjectCleanupService(client, NullLogger<SnykProjectCleanupService>.Instance);
             return (service, handler);
         }
 
@@ -130,7 +130,7 @@ namespace SnykGhe.Core.Tests
                 r.RequestUri.Query.Contains("target_reference", StringComparison.Ordinal));
             Assert.Contains($"target_id={TargetId}", listByRef.RequestUri!.Query);
             Assert.Contains("target_reference=fix%2Fsnyk-open-source-vulns", listByRef.RequestUri.Query);
-            Assert.Contains("version=2024-10-15", listByRef.RequestUri.Query);
+            Assert.Contains($"version={new SnykOptions().RestApiVersion}", listByRef.RequestUri.Query);
             Assert.Equal("Bearer", listByRef.Headers.Authorization!.Scheme);
         }
 

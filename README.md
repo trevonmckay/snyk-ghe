@@ -150,12 +150,58 @@ All keys bind from `appsettings.json` / environment variables (double-underscore
 | `Snyk:CoalesceBaselineScans` | When `true` (default), baseline scans are coordinated through the coordination table: a burst of pushes to one branch collapses to a single in-flight scan (latest commit wins), two workers never scan the same branch at once, and a commit already scanned (a Service Bus redelivery, or a push the in-flight scan's clone already picked up) is skipped. Set `false` to scan every push independently |
 | `Snyk:ScanLeaseMinutes` | Lifetime of a baseline-scan single-flight lease (default `30`). Must exceed a scan's duration; also how long a crashed worker blocks that branch's baseline scans before the lease is reclaimed |
 | `Snyk:ScanCode` / `Snyk:ScanIac` | When `true`, additionally run `snyk code test` (SAST) / `snyk iac test` and publish a separate `sast/snyk` / `iac/snyk` Check Run. Off by default (Snyk Code is separately licensed; IaC needs IaC files). A not-applicable product skips its check |
+| `Snyk:Engines:OpenSource` / `Engines:Code` / `Engines:Iac` | Which engine runs each product: `Cli` (default) or `Api`. See [Scan engines](#scan-engines) — `Iac` accepts only `Cli`, and `Code=Api` requires `Snyk:ScmIntegrationId` |
+| `Snyk:ScmIntegrationId` | Snyk SCM integration id (**Settings → Integrations → _your SCM_ → Integration ID**). Required when `Snyk:Engines:Code=Api`, which reads repository source through the integration rather than from the clone. Unused by the CLI engine |
 | `Storage:Provider` | `AzureTable` or `DynamoDb` |
 | `Storage:TableName` / `Storage:ScanCoordinationTableName` | Table/collection names for the installation registry (`installations`) and baseline-scan coordination (`scancoordination`). Both are created at startup |
 | `Storage:AdminApiKey` | Guards the `PUT /api/admin/orgs/{org}` mapping endpoint and the registration flow (closed if unset) |
 | `SecretRepository:Provider` | `AzureKeyVault` / `AwsSecretsManager` / `None` — where the registration flow writes generated secrets |
 | `Registration:PublicBaseUrl` | This service's public URL used in the manifest (falls back to the request host) |
 | `Registration:WebhookUrl` | Webhook URL placed in the manifest when the public webhook endpoint is a different host than this service (scale-to-zero topology: the Function). Falls back to `{PublicBaseUrl}/api/github/webhooks` |
+
+### Scan engines
+
+Each product runs either through the Snyk **CLI** (against the cloned working copy) or the Snyk
+**Test REST API** (`src/Snyk.Client`). Selection is per product, so one product can be moved back to
+the CLI without moving the others. Cutting over is a configuration change, not a code change.
+
+| Product | `Cli` | `Api` |
+| --- | --- | --- |
+| `OpenSource` | `snyk test --all-projects` | Submits each project's dependency graph as an inline resource |
+| `Code` | `snyk code test` | Submits an SCM resource; **requires `Snyk:ScmIntegrationId`** |
+| `Iac` | `snyk iac test` | **Not available** — rejected at startup |
+
+Three constraints come from Snyk's Test API, which is Early Access:
+
+- **IaC has no API path.** The API exposes an `iac` scan configuration, but no resource type produces
+  an IaC scan component, so every submitted IaC test fails to assemble. `Snyk:Engines:Iac=Api` is
+  rejected at startup rather than failing each scan.
+- **`Code=Api` scans through the SCM integration, not the clone.** The repository must already be
+  imported into Snyk under that integration. A repository whose only Snyk target was created by
+  `snyk monitor` does not qualify, and its check reports `Target not found` as a non-blocking neutral
+  result naming the cause.
+- **`OpenSource=Api` still needs the CLI**, which generates the dependency graphs the API scans. The
+  API's other SCA inputs require the repository to be registered with Snyk beforehand.
+- **The API scanners cannot publish results.** `publish_report: true` writes nothing. For an SCA inline
+  dep-graph the test finishes normally and no project is created or updated — not with `monitor: true`,
+  not with a `target_name` matching a natively-imported target, and not with `scm_context.repo_url`
+  naming the repository. For SAST over an SCM resource it is worse: the test errors with
+  `failed to create project ... got [400] status`, and supplying `target_name`/`target_reference` is
+  rejected outright (*"target configuration is not possible for a git URL input"*).
+
+  This is not a permissions problem. It reproduces identically under a read-only `org.read` token, a
+  group-level service account, and an **Org Collaborator** service account — the same role the app's own
+  Snyk service account uses to create projects via `snyk monitor`. The API scanners therefore send
+  `publish_report: false`: publication that errors the test is worse than publication that never happens.
+
+Monitoring (`snyk monitor`) always runs through the CLI, on either engine: it publishes a snapshot
+rather than testing a revision, and it is currently the *only* way anything reaches the Snyk Web UI.
+It covers Open Source, so `OpenSource=Api` keeps publishing exactly as before.
+
+`Code=Api` does change what reaches the portal. The CLI Code scan publishes its own snapshot with
+`snyk code test --report`; the API scan cannot, and `snyk monitor` does not publish SAST. Snyk Code
+snapshots therefore stop being refreshed on that engine, and the Code check's deep link resolves only
+if a project of that name already exists — for example one imported by the native SCM integration.
 
 Map a GitHub org to a Snyk org at runtime:
 
