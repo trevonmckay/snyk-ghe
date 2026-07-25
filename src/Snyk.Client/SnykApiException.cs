@@ -20,5 +20,11 @@ namespace Snyk.Client
 
         /// <summary>Snyk error code (e.g. <c>SNYK-TARGET-0001</c>), when the response carried one.</summary>
         public string? ErrorCode { get; init; }
+
+        /// <summary>
+        /// Value of the response's <c>snyk-request-id</c> header, when present. This is the handle Snyk
+        /// support uses to trace a request server-side, so it is worth logging on every failure.
+        /// </summary>
+        public string? RequestId { get; init; }
     }
 }

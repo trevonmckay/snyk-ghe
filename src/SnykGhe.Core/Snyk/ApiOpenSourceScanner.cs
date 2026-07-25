@@ -83,7 +83,8 @@ namespace SnykGhe.Core.Snyk
 
                     if (!run.Test.Succeeded)
                     {
-                        _logger.LogWarning("Snyk API test for {Manifest} did not complete: {Errors}", graph.Name, run.Test.ErrorSummary);
+                        _logger.LogWarning("Snyk API test for {Manifest} did not complete (request-id {RequestId}): {Errors}",
+                            graph.Name, run.Test.RequestId, run.Test.ErrorSummary);
                         return Failed(run.Test.ErrorSummary);
                     }
 
@@ -91,7 +92,7 @@ namespace SnykGhe.Core.Snyk
                 }
                 catch (SnykApiException ex)
                 {
-                    _logger.LogWarning(ex, "Snyk API test for {Manifest} failed.", graph.Name);
+                    _logger.LogWarning(ex, "Snyk API test for {Manifest} failed (request-id {RequestId}).", graph.Name, ex.RequestId);
                     return Failed(ex.Message);
                 }
             }

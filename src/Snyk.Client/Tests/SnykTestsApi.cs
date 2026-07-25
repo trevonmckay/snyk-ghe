@@ -81,8 +81,13 @@ namespace Snyk.Client.Tests
         {
             var url = _transport.BuildUrl($"/orgs/{Uri.EscapeDataString(orgId)}/tests/{Uri.EscapeDataString(testId)}");
 
-            using var doc = await _transport.GetAsync(url, cancellationToken);
-            return TestResultParser.ParseTest(doc.RootElement.GetProperty("data"));
+            var (doc, requestId) = await _transport.GetWithRequestIdAsync(url, cancellationToken);
+            using (doc)
+            {
+                return doc is null
+                    ? throw new SnykApiException($"Snyk returned an empty body for test {testId}.")
+                    : TestResultParser.ParseTest(doc.RootElement.GetProperty("data"), requestId);
+            }
         }
 
         /// <summary>Reads every finding of a completed test, following pagination.</summary>
@@ -139,7 +144,8 @@ namespace Snyk.Client.Tests
 
             if (!test.Succeeded)
             {
-                _logger.LogWarning("Snyk test {TestId} did not complete: {Errors}", test.Id, test.ErrorSummary);
+                _logger.LogWarning("Snyk test {TestId} did not complete (request-id {RequestId}): {Errors}",
+                    test.Id, test.RequestId, test.ErrorSummary);
                 return new SnykTestRun { Test = test, Findings = [] };
             }
 

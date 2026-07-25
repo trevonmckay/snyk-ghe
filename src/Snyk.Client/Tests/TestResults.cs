@@ -119,6 +119,12 @@ namespace Snyk.Client.Tests
     {
         public required string Id { get; init; }
 
+        /// <summary>
+        /// The <c>snyk-request-id</c> of the response this test was read from. A test that reached a terminal
+        /// error state is not an HTTP failure, so this is the handle to give Snyk support to trace it.
+        /// </summary>
+        public string? RequestId { get; init; }
+
         public TestExecutionState Execution { get; init; }
 
         /// <summary><c>pass</c> or <c>fail</c>, absent when the test errored.</summary>
@@ -149,13 +155,14 @@ namespace Snyk.Client.Tests
     /// <summary>Parsers translating JSON:API payloads into the public result model.</summary>
     internal static class TestResultParser
     {
-        internal static SnykTest ParseTest(JsonElement data)
+        internal static SnykTest ParseTest(JsonElement data, string? requestId = null)
         {
             var attributes = data.GetProperty("attributes");
 
             return new SnykTest
             {
                 Id = data.GetProperty("id").GetString() ?? string.Empty,
+                RequestId = requestId,
                 Execution = ParseExecution(Str(attributes, "state", "execution")),
                 Outcome = Str(attributes, "outcome", "result"),
                 OutcomeReason = Str(attributes, "outcome", "reason"),
