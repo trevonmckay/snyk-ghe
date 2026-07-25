@@ -72,7 +72,7 @@ namespace SnykGhe.Core.Snyk
             }
             catch (SnykApiException ex)
             {
-                _logger.LogWarning(ex, "Snyk Code API test failed for {Repo}.", context.RemoteRepoUrl);
+                _logger.LogWarning(ex, "Snyk Code API test failed for {Repo} (request-id {RequestId}).", context.RemoteRepoUrl, ex.RequestId);
                 return ProductScanResult.Fail(SnykProduct.Code, ex.Message);
             }
 
@@ -103,7 +103,8 @@ namespace SnykGhe.Core.Snyk
                     "Import the repository into Snyk, or run the Code scan on the CLI engine.");
             }
 
-            _logger.LogWarning("Snyk Code API test {TestId} did not complete: {Errors}", test.Id, test.ErrorSummary);
+            _logger.LogWarning("Snyk Code API test {TestId} did not complete (request-id {RequestId}): {Errors}",
+                test.Id, test.RequestId, test.ErrorSummary);
             return ProductScanResult.Fail(SnykProduct.Code, test.ErrorSummary);
         }
 

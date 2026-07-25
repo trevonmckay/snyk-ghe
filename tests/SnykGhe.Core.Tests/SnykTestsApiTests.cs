@@ -120,8 +120,14 @@ namespace SnykGhe.Core.Tests
                 return Json(HttpStatusCode.OK, _testJson);
             }
 
-            private static HttpResponseMessage Json(HttpStatusCode status, string body) =>
-                new(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+            internal const string RequestId = "req-9f4c-trace-0001";
+
+            private static HttpResponseMessage Json(HttpStatusCode status, string body)
+            {
+                var message = new HttpResponseMessage(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+                message.Headers.TryAddWithoutValidation("snyk-request-id", RequestId);
+                return message;
+            }
         }
 
         private sealed class StubHttpClientFactory : IHttpClientFactory
@@ -302,6 +308,51 @@ namespace SnykGhe.Core.Tests
             Assert.Equal("SNYK-TARGET-0001", run.Test.Errors.Single().Code);
             Assert.Contains("Target not found", run.Test.ErrorSummary);
             Assert.DoesNotContain(handler.Requests, r => r.RequestUri!.AbsoluteUri.Contains("/findings"));
+
+            // An errored test is not an HTTP failure, so the request-id captured from the GET /tests response
+            // is the only handle to give Snyk support to trace it.
+            Assert.Equal(TestApiHandler.RequestId, run.Test.RequestId);
+        }
+
+        /// <summary>
+        /// A genuine HTTP failure must carry the response's <c>snyk-request-id</c> on the exception, so a
+        /// failed scan in production has the trace handle to hand to Snyk support.
+        /// </summary>
+        [Fact]
+        public async Task HttpError_CapturesRequestIdOnException()
+        {
+            const string requestId = "req-err-trace-0002";
+            var handler = new ErrorHandler(HttpStatusCode.InternalServerError, requestId);
+            var client = SnykApiClientFactory.Create(new StubHttpClientFactory(handler), Options());
+
+            var ex = await Assert.ThrowsAsync<SnykApiException>(
+                () => client.Tests.CreateAsync(OrgId, DepGraphRequest(), CancellationToken.None));
+
+            Assert.Equal(requestId, ex.RequestId);
+        }
+
+        /// <summary>Answers every request with a fixed error status carrying a <c>snyk-request-id</c> header.</summary>
+        private sealed class ErrorHandler : HttpMessageHandler
+        {
+            private readonly HttpStatusCode _status;
+            private readonly string _requestId;
+
+            public ErrorHandler(HttpStatusCode status, string requestId)
+            {
+                _status = status;
+                _requestId = requestId;
+            }
+
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                var message = new HttpResponseMessage(_status)
+                {
+                    Content = new StringContent(
+                        """{"errors":[{"detail":"boom","status":"500"}]}""", Encoding.UTF8, "application/vnd.api+json"),
+                };
+                message.Headers.TryAddWithoutValidation("snyk-request-id", _requestId);
+                return Task.FromResult(message);
+            }
         }
 
         [Fact]

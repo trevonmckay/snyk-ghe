@@ -56,10 +56,19 @@ namespace Snyk.Client
 
         internal async Task<JsonDocument> GetAsync(string url, CancellationToken cancellationToken)
         {
+            var (document, _) = await GetWithRequestIdAsync(url, cancellationToken);
+            return document ?? throw new SnykApiException($"Snyk returned an empty body for GET {url}.");
+        }
+
+        /// <summary>
+        /// As <see cref="GetAsync"/>, but also returns the response's <c>snyk-request-id</c> so callers can
+        /// attach it to the result. The document is null only when the body is empty.
+        /// </summary>
+        internal async Task<(JsonDocument? Document, string? RequestId)> GetWithRequestIdAsync(string url, CancellationToken cancellationToken)
+        {
             using var response = await SendAsync(HttpMethod.Get, url, content: null, allowRedirect: true, cancellationToken);
             await EnsureSuccessAsync(response, url, cancellationToken);
-            return await ReadJsonAsync(response, cancellationToken)
-                ?? throw new SnykApiException($"Snyk returned an empty body for GET {url}.");
+            return (await ReadJsonAsync(response, cancellationToken), RequestIdOf(response));
         }
 
         internal async Task<JsonDocument?> GetOrNullAsync(string url, CancellationToken cancellationToken)
@@ -94,7 +103,8 @@ namespace Snyk.Client
             }
 
             var body = await SafeReadAsync(response, cancellationToken);
-            _logger.LogWarning("Snyk DELETE {Url} failed ({Status}): {Body}", url, (int)response.StatusCode, body);
+            _logger.LogWarning("Snyk DELETE {Url} failed ({Status}, request-id {RequestId}): {Body}",
+                url, (int)response.StatusCode, RequestIdOf(response), body);
             return false;
         }
 
@@ -195,7 +205,33 @@ namespace Snyk.Client
             // HttpClient follows redirects transparently; the test-job 303 must be observed, not followed.
             var clientName = allowRedirect ? SnykApiClient.HttpClientName : SnykApiClient.NoRedirectHttpClientName;
             var http = _httpClientFactory.CreateClient(clientName);
-            return await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+            _logger.LogDebug("Snyk {Method} {Url} -> {Status} (request-id {RequestId})",
+                method, url, (int)response.StatusCode, RequestIdOf(response));
+
+            return response;
+        }
+
+        /// <summary>
+        /// Reads the Snyk request-id header, which every REST response carries and support uses to trace a
+        /// call. Falls back to the generic <c>x-request-id</c> if the vendor header is absent.
+        /// </summary>
+        private static string? RequestIdOf(HttpResponseMessage response)
+        {
+            foreach (var name in new[] { "snyk-request-id", "x-request-id" })
+            {
+                if (response.Headers.TryGetValues(name, out var values))
+                {
+                    var id = values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+                    if (id is not null)
+                    {
+                        return id;
+                    }
+                }
+            }
+
+            return null;
         }
 
         private static async Task<JsonDocument?> ReadJsonAsync(HttpResponseMessage response, CancellationToken cancellationToken)
@@ -213,14 +249,18 @@ namespace Snyk.Client
 
             var body = await SafeReadAsync(response, cancellationToken);
             var (detail, code) = ParseError(body);
+            var requestId = RequestIdOf(response);
 
-            _logger.LogWarning("Snyk {Method} {Url} failed ({Status}): {Body}",
-                response.RequestMessage?.Method, url, (int)response.StatusCode, body);
+            _logger.LogWarning("Snyk {Method} {Url} failed ({Status}, request-id {RequestId}): {Body}",
+                response.RequestMessage?.Method, url, (int)response.StatusCode, requestId, body);
 
             throw new SnykApiException(
                 detail ?? $"Snyk request to {url} failed with status {(int)response.StatusCode}.",
                 (int)response.StatusCode,
-                code);
+                code)
+            {
+                RequestId = requestId,
+            };
         }
 
         private static async Task<string> SafeReadAsync(HttpResponseMessage response, CancellationToken cancellationToken)
