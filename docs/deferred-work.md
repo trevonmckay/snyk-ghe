@@ -3,25 +3,43 @@
 Decisions to *not* build something, recorded so they are not rediscovered as bugs. Each entry says what
 is deferred, why, and what would justify revisiting it.
 
-## Snyk Test API cannot publish results
+## Snyk Test API cannot update SCM-imported projects
 
 The API scan engines (`ApiOpenSourceScanner`, `ApiCodeScanner`) send `publish_report: false`
 unconditionally, and publishing to the Snyk Web UI is left entirely to `snyk monitor` (CLI). This is not a
-choice — the Test REST API does not currently publish:
+choice — and it is not a bug. **Snyk Support confirmed (2026-07-27)** that `publish_report` on the Test API
+routes the result to Snyk's project-publishing service, which only ever creates or updates a **CLI-origin
+project**. It never writes back to a project imported through an SCM integration. So even where publishing
+*succeeds*, it would spawn a separate CLI-origin project rather than update the existing GitHub Enterprise
+projects — which is the opposite of the goal.
+
+Per-path behaviour, all confirmed by Support:
 
 - **SCA over an inline dep-graph:** `publish_report: true` is accepted, echoed back in the test's
-  `config`, and then ignored. No project is created or updated — not with `target_name` matching an
-  existing target, not with `monitor: true`, and not with `scm_context.repo_url` naming the repository.
-- **SAST over an SCM resource:** `publish_report: true` errors the whole test with
-  `failed to create project ... got [400] status`. Adding `target_name`/`target_reference` is rejected
-  outright (*"target configuration is not possible for a git URL input"*); Snyk's internal flow is named
-  `sast_scm_stateless`.
+  `config`, and then ignored — for inline resources the publish step is *not wired up to write anything
+  yet*. No project is created or updated, under any variable tried (`target_name`, `monitor: true`,
+  `scm_context.repo_url`).
+- **SAST over an SCM resource:** `publish_report: true` errors the whole test. The test itself finishes;
+  the failure is the publish step, which needs a project name to create its CLI-origin project and has
+  none for a git-URL input, so it returns `failed to create project ... got [400] status`. Adding
+  `target_name`/`target_reference` is rejected outright (*"target configuration is not possible for a git
+  URL input"*) — those fields are unsupported for a git URL, not a workaround. Snyk's internal flow is
+  named `sast_scm_stateless`.
 
-Verified across three credentials including an Org Collaborator service account — the same role that
-creates projects via `snyk monitor` — so it is not a permissions gap. Raised with Snyk (support case
-`00132230`). **Revisit when** Snyk confirms a supported path to update an existing SCM-imported project
-from a Test API result; at that point `ApiOpenSourceScanner`/`ApiCodeScanner` can publish and the reliance
-on `snyk monitor` for the Web UI link can be reconsidered.
+Permissions were ruled out first (three credentials including an Org Collaborator service account, the
+same role that creates projects via `snyk monitor`), then Support confirmed the cause is the feature's
+current design, not authorization.
+
+**Supported path today** for keeping the existing GitHub-Enterprise-imported projects fresh (per Support):
+the SCM integration's own recurring tests / re-import, plus `snyk monitor` for Open Source (it refreshes
+the snapshot on the existing npm project). That is exactly this app's architecture — API for testing with
+`publish_report: false`, `snyk monitor` for the Web-UI publish.
+
+**Revisit when** Snyk ships publishing to an existing SCM-origin project (Support is checking whether it is
+on the roadmap, and re-verifying `publish_report` enrollment for our Org). At that point
+`ApiOpenSourceScanner`/`ApiCodeScanner` can publish and the reliance on `snyk monitor` for the Web UI link
+can be reconsidered. Support also agreed the accepted-then-ignored `publish_report` should be rejected at
+request validation, and is passing that to the owning team.
 
 ## IaC has no Test API path
 
