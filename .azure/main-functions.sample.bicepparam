@@ -17,3 +17,22 @@ param snykOAuthClientId = ''
 param snykToken = ''
 param snykOAuthClientSecret = ''
 param adminApiKey = ''
+
+// --- Optional: reuse existing shared infrastructure ---
+// By default the template creates its own registry, Container Apps environment, and Log Analytics
+// workspace, all named from baseName. To reuse a centrally-governed / VNet-integrated resource instead,
+// flip the matching create* to false and point *Name (plus *ResourceGroup when it lives in another group)
+// at it. Any resource name can also be overridden on its own to match a house naming convention.
+//
+// param createAcr = false
+// param acrName = 'sharedregistry'
+// param acrResourceGroup = 'rg-platform-containers'
+//
+// param createEnvironment = false
+// param envName = 'cae-shared-eastus2'
+// param envResourceGroup = 'rg-platform-containers'
+// param workloadProfileName = 'Consumption'   // set when the shared environment is workload-profiles type
+//
+// param createLogAnalytics = false
+// param lawName = 'log-shared'
+// param lawResourceGroup = 'rg-platform-logging'

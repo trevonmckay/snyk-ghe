@@ -1,8 +1,3 @@
-@description('Base name used to derive resource names. Lowercase letters and numbers.')
-@minLength(3)
-@maxLength(17)
-param baseName string
-
 @description('Azure region for all resources.')
 param location string = resourceGroup().location
 
@@ -76,17 +71,59 @@ param serviceBusQueueName string = 'webhook-deliveries'
 @description('dotnet-isolated runtime version for the Function. Must be a version Flex Consumption supports in your region.')
 param functionRuntimeVersion string = '10.0'
 
-var storageName = toLower('${baseName}stg')
-var acrName = toLower('${baseName}acr')
-var kvName = 'kvsnyk'
-var uamiName = 'id-snyk-worker'
-var lawName = 'log-snyk'
-var envName = toLower('cae-snyk-${location}')
-var appName = '${baseName}-app'
-var sbName = 'sbns-snyk'
-var planName = 'plan-snyk-functions'
-var functionName = '${baseName}-fn'
-var aiName = '${baseName}-ai'
+// --- Resource names ---
+// Names default to values derived from baseName, so a self-contained deployment needs only baseName.
+// Override any individually to fit an existing naming convention.
+@description('Base name used to derive default resource names. Lowercase letters and numbers.')
+@minLength(3)
+@maxLength(17)
+param baseName string
+
+@description('Storage account name. 3-24 chars, lowercase alphanumeric, globally unique.')
+param storageName string = toLower('${baseName}stg')
+@description('Key Vault name. 3-24 chars, globally unique.')
+param kvName string = 'kv${baseName}'
+@description('Service Bus namespace name. Globally unique.')
+param sbName string = 'sbns-${baseName}'
+@description('Application Insights component name.')
+param aiName string = '${baseName}-ai'
+@description('User-assigned managed identity name.')
+param uamiName string = 'id-${baseName}-worker'
+@description('Function App (webhook front door) name. Globally unique.')
+param functionName string = '${baseName}-fn'
+@description('Container App (scan processor) name.')
+param appName string = '${baseName}-app'
+@description('Flex Consumption plan name.')
+param planName string = 'plan-${baseName}'
+
+// --- Shared resources: create by default, or bring your own ---
+// The registry, Container Apps environment, and Log Analytics workspace are each created by this template
+// by default (self-contained deployment). To reuse an existing shared / VNet-integrated / centrally-governed
+// resource instead, set the matching create* to false and point *Name (and *ResourceGroup for a resource in
+// another group) at it — this template then references it rather than owning it.
+@description('Create the Azure Container Registry (false references an existing one via acrName/acrResourceGroup).')
+param createAcr bool = true
+@description('Container Registry name.')
+param acrName string = toLower('${baseName}acr')
+@description('Resource group of the Container Registry. Defaults to this deployment resource group.')
+param acrResourceGroup string = resourceGroup().name
+
+@description('Create the Container Apps environment (false references an existing one via envName/envResourceGroup).')
+param createEnvironment bool = true
+@description('Container Apps environment name.')
+param envName string = toLower('cae-${baseName}-${location}')
+@description('Resource group of the Container Apps environment. Defaults to this deployment resource group.')
+param envResourceGroup string = resourceGroup().name
+@description('Workload profile to run the app on. Empty for a Consumption-only environment; set (e.g. Consumption) for a workload-profiles environment.')
+param workloadProfileName string = ''
+
+@description('Create the Log Analytics workspace (false references an existing one via lawName/lawResourceGroup).')
+param createLogAnalytics bool = true
+@description('Log Analytics workspace name.')
+param lawName string = 'log-${baseName}'
+@description('Resource group of the Log Analytics workspace. Defaults to this deployment resource group.')
+param lawResourceGroup string = resourceGroup().name
+
 var deploymentContainerName = 'app-package'
 
 // Built-in role definition ids
@@ -95,7 +132,6 @@ var roleStorageBlobDataOwner = subscriptionResourceId('Microsoft.Authorization/r
 var roleStorageQueueDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
 var roleKeyVaultSecretsUser = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
 var roleKeyVaultSecretsOfficer = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
-var roleAcrPull = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
 // Azure Service Bus Data Owner — the Function sends, the Container App receives, and the KEDA scaler
 // reads queue depth; this one role covers all three for the shared identity.
 var roleServiceBusDataOwner = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '090c5cfd-751d-490a-894a-3ce6f1109419')
@@ -106,7 +142,7 @@ resource uami 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   location: location
 }
 
-resource law 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
+resource lawCreate 'Microsoft.OperationalInsights/workspaces@2023-09-01' = if (createLogAnalytics) {
   name: lawName
   location: location
   properties: {
@@ -115,13 +151,20 @@ resource law 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   }
 }
 
+resource lawExisting 'Microsoft.OperationalInsights/workspaces@2023-09-01' existing = if (!createLogAnalytics) {
+  name: lawName
+  scope: resourceGroup(lawResourceGroup)
+}
+
+var lawId = createLogAnalytics ? lawCreate.id : lawExisting.id
+
 resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   name: aiName
   location: location
   kind: 'web'
   properties: {
     Application_Type: 'web'
-    WorkspaceResourceId: law.id
+    WorkspaceResourceId: lawId
   }
 }
 
@@ -174,7 +217,7 @@ resource serviceBus 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' = {
   }
 }
 
-resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
+resource acrCreate 'Microsoft.ContainerRegistry/registries@2023-07-01' = if (createAcr) {
   name: acrName
   location: location
   sku: { name: 'Standard' }
@@ -182,6 +225,16 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
     adminUserEnabled: false
   }
 }
+
+resource acrExisting 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = if (!createAcr) {
+  name: acrName
+  scope: resourceGroup(acrResourceGroup)
+}
+
+// The create flag selects which of the two resources is actually deployed, so the ternary only reads the
+// non-null one; the analyzer cannot prove that, hence the suppression.
+#disable-next-line BCP318
+var acrServer = createAcr ? acrCreate.properties.loginServer : acrExisting.properties.loginServer
 
 resource kv 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: kvName
@@ -287,14 +340,17 @@ resource uamiSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01'
   }
 }
 
-resource acrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(acr.id, uami.id, roleAcrPull)
-  scope: acr
-  properties: {
-    roleDefinitionId: roleAcrPull
+// AcrPull for the runtime identity. The registry may live in another resource group (bring-your-own), and
+// a role assignment can only be declared in the target resource's resource group, so it is always deployed
+// through a module scoped to the registry's group — which resolves to this group in the create case.
+module acrPull 'modules/acr-pull-role.bicep' = {
+  name: 'deploy-acrpull'
+  scope: resourceGroup(acrResourceGroup)
+  params: {
+    acrName: acrName
     principalId: uami.properties.principalId
-    principalType: 'ServicePrincipal'
   }
+  dependsOn: [ acrCreate ]
 }
 
 resource serviceBusDataOwner 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
@@ -391,7 +447,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
 }
 
 // --- Processing tier (Container App, scales to zero) ---
-resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
+resource envCreate 'Microsoft.App/managedEnvironments@2024-03-01' = if (createEnvironment) {
   name: envName
   location: location
   properties: {
@@ -404,11 +460,23 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
   }
 }
 
-resource envDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+resource envExisting 'Microsoft.App/managedEnvironments@2024-03-01' existing = if (!createEnvironment) {
+  name: envName
+  scope: resourceGroup(envResourceGroup)
+}
+
+var envId = createEnvironment ? envCreate.id : envExisting.id
+// See acrServer above: the create flag guarantees only the deployed branch is read.
+#disable-next-line BCP318
+var envDefaultDomain = createEnvironment ? envCreate.properties.defaultDomain : envExisting.properties.defaultDomain
+
+// When this template creates the environment, route its console logs to the workspace. A bring-your-own
+// environment is expected to carry its own diagnostics, so this is skipped in that case.
+resource envDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (createEnvironment) {
   name: 'send-app-logs-to-log-analytics'
-  scope: env
+  scope: envCreate
   properties: {
-    workspaceId: law.id
+    workspaceId: lawId
     logAnalyticsDestinationType: 'Dedicated'
     logs: [
       { category: 'ContainerAppConsoleLogs', enabled: true }
@@ -438,7 +506,9 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
     }
   }
   properties: {
-    managedEnvironmentId: env.id
+    managedEnvironmentId: envId
+    // Absent for a Consumption-only environment; set to a profile name for a workload-profiles environment.
+    workloadProfileName: empty(workloadProfileName) ? null : workloadProfileName
     configuration: {
       // Ingress serves only the admin/registration routes (e.g. /api/github/app/register). GitHub webhooks
       // still flow through the Function front door, so this endpoint sees no GitHub-timeout-bound traffic; a
@@ -452,7 +522,7 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
       }
       registries: [
         {
-          server: acr.properties.loginServer
+          server: acrServer
           identity: uami.id
         }
       ]
@@ -476,6 +546,11 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
           env: concat([
             // DefaultAzureCredential selects this user-assigned identity for Storage, Key Vault, and Service Bus.
             { name: 'AZURE_CLIENT_ID', value: uami.properties.clientId }
+            // Application Insights for the processing tier: the ASP.NET host reads the connection string to
+            // emit traces, and authenticates ingestion through the managed identity (granted Monitoring
+            // Metrics Publisher below) rather than an instrumentation key.
+            { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
+            { name: 'APPLICATIONINSIGHTS_AUTHENTICATION_STRING', value: 'ClientId=${uami.properties.clientId};Authorization=AAD' }
             { name: 'GitHub__ApiBaseUrl', value: gitHubApiBaseUrl }
             { name: 'GitHub__AppId', value: string(gitHubAppId) }
             // GitHub__PrivateKeyPem is loaded from Key Vault at runtime via the app's Key Vault
@@ -496,7 +571,7 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
             { name: 'ServiceBus__QueueName', value: serviceBusQueueName }
             // Registration runs here, but the manifest's webhook URL must point at the Function front door,
             // not this container — otherwise GitHub would deliver webhooks straight to the scale-to-zero app.
-            { name: 'Registration__PublicBaseUrl', value: 'https://${appName}.${env.properties.defaultDomain}' }
+            { name: 'Registration__PublicBaseUrl', value: 'https://${appName}.${envDefaultDomain}' }
             { name: 'Registration__WebhookUrl', value: 'https://${functionApp.properties.defaultHostName}/api/github/webhooks' }
             // Registration persists the generated private key + webhook secret to Key Vault. This app then
             // loads the private key from there via the Key Vault configuration provider; the Function reads
@@ -552,7 +627,7 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
 output webhookUrl string = 'https://${functionApp.properties.defaultHostName}/api/github/webhooks'
 output registrationUrl string = 'https://${app.properties.configuration.ingress.fqdn}/api/github/app/register'
 output functionAppName string = functionApp.name
-output acrLoginServer string = acr.properties.loginServer
+output acrLoginServer string = acrServer
 output keyVaultName string = kv.name
 output managedIdentityClientId string = uami.properties.clientId
 output serviceBusNamespace string = '${serviceBus.name}.servicebus.windows.net'
