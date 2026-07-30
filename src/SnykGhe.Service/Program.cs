@@ -3,6 +3,7 @@ using Amazon.SQS;
 using Azure.Extensions.AspNetCore.Configuration.Secrets;
 using Azure.Identity;
 using Azure.Messaging.ServiceBus;
+using Microsoft.ApplicationInsights.Extensibility;
 using Octokit.Webhooks;
 using SnykGhe.Core.Configuration;
 using SnykGhe.Service.Configuration;
@@ -153,6 +154,16 @@ switch (secretStoreProvider)
     default:
         builder.Services.AddSingleton<IAppCredentialStore, DisplayOnceAppCredentialStore>();
         break;
+}
+
+// Application Insights for the processing tier. Enabled only when a connection string is configured, so
+// local runs and non-Azure hosts stay quiet. Ingestion authenticates with the ambient managed identity
+// rather than an embedded instrumentation key, matching how the app reaches its other Azure resources.
+if (!string.IsNullOrWhiteSpace(builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]))
+{
+    builder.Services.AddApplicationInsightsTelemetry();
+    builder.Services.Configure<TelemetryConfiguration>(
+        config => config.SetAzureTokenCredential(new DefaultAzureCredential()));
 }
 
 builder.Services.AddControllers();

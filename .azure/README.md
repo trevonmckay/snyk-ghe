@@ -87,6 +87,30 @@ pick up the newly-written Key Vault values.
 Because these two secrets are written only by registration (never seeded by the template), a later infra
 redeploy does **not** overwrite them — re-running `az deployment group create` is safe.
 
+Both the Function and the Container App send telemetry to Application Insights (traces, requests,
+dependencies), authenticated with the managed identity rather than an instrumentation key. Query the
+App Insights `AppTraces` / `AppDependencies` tables (or the linked Log Analytics workspace) to observe a
+scan end to end — webhook received, queued, dequeued, Snyk invoked, check run posted.
+
+### Reusing existing shared infrastructure (bring-your-own)
+
+`main-functions.bicep` is **self-contained by default**: it creates its own Container Registry, Container
+Apps environment, and Log Analytics workspace, all named from `baseName`. In an enterprise landing zone
+those are often pre-provisioned and centrally governed (a shared registry, a VNet-integrated environment,
+a platform logging workspace). To reuse them instead of creating new ones, set the matching `create*`
+parameter to `false` and point the template at the existing resource:
+
+| Toggle (default `true`) | Existing resource params | Notes |
+| --- | --- | --- |
+| `createAcr` | `acrName`, `acrResourceGroup` | AcrPull is granted via a module scoped to the registry's resource group, so the registry may live in another group. |
+| `createEnvironment` | `envName`, `envResourceGroup`, `workloadProfileName` | Set `workloadProfileName` when the shared environment is workload-profiles type; leave empty for a Consumption-only environment. VNet integration, egress, and diagnostics belong to the pre-provisioned environment. |
+| `createLogAnalytics` | `lawName`, `lawResourceGroup` | The App Insights component still lives in the workload group; only the backing workspace is shared. |
+
+Any individual resource name (`storageName`, `kvName`, `sbName`, etc.) can likewise be overridden to fit
+a house naming convention without changing the create/bring-your-own behaviour. Keep your environment's
+concrete names, resource-group names, and object ids in a **`*.local.bicepparam`** file (gitignored) —
+copy `main-functions.sample.bicepparam` and fill it in, or pass the values on the CLI.
+
 ## Local development
 
 With no `ServiceBus:FullyQualifiedNamespace` configured, the service falls back to an in-process channel
