@@ -14,6 +14,9 @@ namespace SnykGhe.Core.Tests
         private const string RepoUrl = "https://github.com/acme/widget";
         private const string Branch = "fix/snyk-open-source-vulns";
 
+        // snyk monitor normalizes the CLI target's stored url to the http scheme; the SCM import keeps https.
+        private const string CliRepoUrl = "http://github.com/acme/widget";
+
         /// <summary>
         /// Routes by method + path so one handler can serve the OAuth exchange, the target lookup, the
         /// project list for the branch, the post-delete emptiness check, and the DELETE calls. The two GET
@@ -87,9 +90,18 @@ namespace SnykGhe.Core.Tests
             public HttpClient CreateClient(string name) => new(_handler, disposeHandler: false);
         }
 
+        private static string Target(string id, string url, string integrationType) =>
+            "{\"id\":\"" + id + "\",\"type\":\"target\"," +
+            "\"attributes\":{\"url\":\"" + url + "\",\"display_name\":\"acme/widget\"}," +
+            "\"relationships\":{\"integration\":{\"data\":{\"id\":\"int-" + id + "\"," +
+            "\"attributes\":{\"integration_type\":\"" + integrationType + "\"}}}}}";
+
+        private static string TargetsData(params string[] targets) =>
+            "{\"data\":[" + string.Join(",", targets) + "]}";
+
+        // The repository's app-created target: cli origin, http-scheme url (as snyk monitor stores it).
         private static string TargetsResponse() =>
-            "{\"data\":[{\"id\":\"" + TargetId + "\",\"type\":\"target\"," +
-            "\"attributes\":{\"url\":\"" + RepoUrl + "\",\"display_name\":\"acme/widget\"}}]}";
+            TargetsData(Target(TargetId, CliRepoUrl, "cli"));
 
         private static string Projects(params string[] ids) =>
             "{\"data\":[" + string.Join(",", ids.Select(id => $"{{\"id\":\"{id}\",\"type\":\"project\"}}")) + "]}";
@@ -144,6 +156,53 @@ namespace SnykGhe.Core.Tests
             Assert.Equal(1, deleted);
             var targetDelete = Assert.Single(Deletes(handler, "/targets/"));
             Assert.EndsWith($"/targets/{TargetId}", targetDelete.RequestUri!.AbsolutePath);
+        }
+
+        [Fact]
+        public async Task IgnoresScmTargetAndCleansTheCliTarget()
+        {
+            // The repo has BOTH an SCM integration target (github-enterprise, https) and the app's own cli
+            // target (http). A url lookup finds the SCM one first, but only the cli target's branch references
+            // are the app's to delete — the SCM target must never be scanned for deletion.
+            var targets = TargetsData(
+                Target("scm-1111", RepoUrl, "github-enterprise"),
+                Target(TargetId, CliRepoUrl, "cli"));
+            var (service, handler) = Build(targets, new[] { Projects("P1", "P2") }, remainingJson: Projects("MAIN"));
+
+            var deleted = await service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None);
+
+            Assert.Equal(2, deleted);
+
+            var listByRef = handler.Requests.Single(r =>
+                r.Method == HttpMethod.Get &&
+                r.RequestUri!.AbsolutePath.EndsWith("/projects", StringComparison.Ordinal) &&
+                r.RequestUri.Query.Contains("target_reference", StringComparison.Ordinal));
+            Assert.Contains($"target_id={TargetId}", listByRef.RequestUri!.Query);
+            Assert.DoesNotContain("scm-1111", listByRef.RequestUri.Query);
+        }
+
+        [Fact]
+        public async Task CleansEveryCliTargetWhenRepoHasMultiple()
+        {
+            // A repo can accumulate more than one cli target (atlas-multiplatform had two); the branch's
+            // projects may live under either, so every cli target must be cleaned.
+            var targets = TargetsData(
+                Target("cli-aaaa", CliRepoUrl, "cli"),
+                Target("cli-bbbb", CliRepoUrl, "cli"));
+            var (service, handler) = Build(targets, new[] { Projects("P1"), Projects("P2") }, remainingJson: Projects("MAIN"));
+
+            var deleted = await service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None);
+
+            Assert.Equal(2, deleted);
+            Assert.Equal(2, Deletes(handler, "/projects/").Count());
+
+            var refListings = handler.Requests.Where(r =>
+                r.Method == HttpMethod.Get &&
+                r.RequestUri!.AbsolutePath.EndsWith("/projects", StringComparison.Ordinal) &&
+                r.RequestUri.Query.Contains("target_reference", StringComparison.Ordinal)).ToList();
+            Assert.Equal(2, refListings.Count);
+            Assert.Contains(refListings, r => r.RequestUri!.Query.Contains("target_id=cli-aaaa", StringComparison.Ordinal));
+            Assert.Contains(refListings, r => r.RequestUri!.Query.Contains("target_id=cli-bbbb", StringComparison.Ordinal));
         }
 
         [Fact]
