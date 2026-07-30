@@ -3,6 +3,7 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY nuget.config ./
 # Copy every referenced project file before restore so the layer caches on dependency changes only.
+COPY src/Snyk.Client/Snyk.Client.csproj src/Snyk.Client/
 COPY src/SnykGhe.Contracts/SnykGhe.Contracts.csproj src/SnykGhe.Contracts/
 COPY src/SnykGhe.Core/SnykGhe.Core.csproj src/SnykGhe.Core/
 COPY src/SnykGhe.Service/SnykGhe.Service.csproj src/SnykGhe.Service/
