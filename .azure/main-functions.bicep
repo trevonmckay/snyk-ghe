@@ -7,6 +7,10 @@ param containerImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 @description('Object id (principal id) of the user/service principal running this deployment. Granted Key Vault Secrets Officer so the template can write secret values.')
 param deployerObjectId string
 
+@description('Principal type of deployerObjectId. A pipeline/service-principal deployment uses ServicePrincipal (the default); set User when a person runs the deployment. Setting it explicitly is required in subscriptions where role-assignment rights are granted through an ABAC condition that constrains the assignee principal type.')
+@allowed(['User', 'Group', 'ServicePrincipal'])
+param deployerPrincipalType string = 'ServicePrincipal'
+
 // --- Application configuration (non-secret) ---
 @description('ghe.com REST API base, e.g. https://api.SUBDOMAIN.ghe.com/')
 param gitHubApiBaseUrl string
@@ -326,6 +330,7 @@ resource deployerSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022-04
   properties: {
     roleDefinitionId: roleKeyVaultSecretsOfficer
     principalId: deployerObjectId
+    principalType: deployerPrincipalType
   }
 }
 
