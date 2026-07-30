@@ -107,6 +107,8 @@ param createAcr bool = true
 param acrName string = toLower('${baseName}acr')
 @description('Resource group of the Container Registry. Defaults to this deployment resource group.')
 param acrResourceGroup string = resourceGroup().name
+@description('Role granted to the runtime identity for image pull. Default AcrPull suits RBAC-only registries; for an ABAC-enabled registry (roleAssignmentMode=AbacRepositoryPermissions, where AcrPull is not honored) use Container Registry Repository Reader b93aa761-3e63-49ed-ac28-beffa264f7ac.')
+param acrPullRoleId string = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 
 @description('Create the Container Apps environment (false references an existing one via envName/envResourceGroup).')
 param createEnvironment bool = true
@@ -340,15 +342,17 @@ resource uamiSecretsOfficer 'Microsoft.Authorization/roleAssignments@2022-04-01'
   }
 }
 
-// AcrPull for the runtime identity. The registry may live in another resource group (bring-your-own), and
-// a role assignment can only be declared in the target resource's resource group, so it is always deployed
-// through a module scoped to the registry's group — which resolves to this group in the create case.
+// Image-pull role for the runtime identity. The registry may live in another resource group (bring-your-
+// own), and a role assignment can only be declared in the target resource's resource group, so it is always
+// deployed through a module scoped to the registry's group — which resolves to this group in the create
+// case. The role id is parameterized because ABAC-enabled registries don't honor AcrPull (see acrPullRoleId).
 module acrPull 'modules/acr-pull-role.bicep' = {
   name: 'deploy-acrpull'
   scope: resourceGroup(acrResourceGroup)
   params: {
     acrName: acrName
     principalId: uami.properties.principalId
+    roleDefinitionId: acrPullRoleId
   }
   dependsOn: [ acrCreate ]
 }
