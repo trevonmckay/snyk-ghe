@@ -560,6 +560,9 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
             // Metrics Publisher below) rather than an instrumentation key.
             { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
             { name: 'APPLICATIONINSIGHTS_AUTHENTICATION_STRING', value: 'ClientId=${uami.properties.clientId};Authorization=AAD' }
+            // A Container App sets no WEBSITE_SITE_NAME, so App Insights would leave cloud_RoleName empty;
+            // name this tier explicitly so it is distinguishable from the Function in the Application Map.
+            { name: 'APPLICATIONINSIGHTS_ROLE_NAME', value: appName }
             { name: 'GitHub__ApiBaseUrl', value: gitHubApiBaseUrl }
             { name: 'GitHub__AppId', value: string(gitHubAppId) }
             // GitHub__PrivateKeyPem is loaded from Key Vault at runtime via the app's Key Vault
