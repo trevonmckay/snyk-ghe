@@ -6,6 +6,7 @@ using Azure.Messaging.ServiceBus;
 using Microsoft.ApplicationInsights.Extensibility;
 using Octokit.Webhooks;
 using SnykGhe.Core.Configuration;
+using SnykGhe.Service;
 using SnykGhe.Service.Configuration;
 using SnykGhe.Core.Fix;
 using SnykGhe.Core.GitHub;
@@ -164,6 +165,14 @@ if (!string.IsNullOrWhiteSpace(builder.Configuration["APPLICATIONINSIGHTS_CONNEC
     builder.Services.AddApplicationInsightsTelemetry();
     builder.Services.Configure<TelemetryConfiguration>(
         config => config.SetAzureTokenCredential(new DefaultAzureCredential()));
+
+    // A Container App sets no WEBSITE_SITE_NAME, so the built-in role-name initializers leave
+    // cloud_RoleName empty; supply it explicitly when configured so this tier is named in App Insights.
+    var roleName = builder.Configuration["APPLICATIONINSIGHTS_ROLE_NAME"];
+    if (!string.IsNullOrWhiteSpace(roleName))
+    {
+        builder.Services.AddSingleton<ITelemetryInitializer>(new RoleNameTelemetryInitializer(roleName));
+    }
 }
 
 builder.Services.AddControllers();
