@@ -70,8 +70,24 @@ namespace SnykGhe.Core.Snyk
             // A non-zero exit still prints uris for the manifests that did monitor, so parse regardless.
             if (outcome.ExitCode != 0)
             {
-                _logger.LogWarning("Snyk monitor exited {Code} in {Dir}: {Error}",
-                    outcome.ExitCode, context.WorkingDirectory, outcome.StandardError.Trim());
+                // Under --all-projects a non-zero exit is usually a partial failure: some manifests monitored,
+                // one errored. The per-manifest error is in the --json stdout, not stderr, so surface it there.
+                var failures = SnykMonitorResult.Failures(outcome.StandardOutput);
+                if (failures.Count > 0)
+                {
+                    _logger.LogWarning("Snyk monitor exited {Code} in {Dir}: {Count} manifest(s) failed to monitor.",
+                        outcome.ExitCode, context.WorkingDirectory, failures.Count);
+                    foreach (var failure in failures)
+                    {
+                        _logger.LogWarning("Snyk monitor could not monitor {Manifest}: {Error}",
+                            failure.Manifest ?? "(unknown manifest)", (failure.Error ?? string.Empty).Trim());
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("Snyk monitor exited {Code} in {Dir}: {Error}",
+                        outcome.ExitCode, context.WorkingDirectory, outcome.StandardError.Trim());
+                }
             }
 
             return SnykMonitorResult.FirstUri(outcome.StandardOutput);
