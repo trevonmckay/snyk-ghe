@@ -89,29 +89,77 @@ namespace SnykGhe.Core.Snyk
     {
         [JsonPropertyName("uri")] public string? Uri { get; set; }
 
+        [JsonPropertyName("ok")] public bool? Ok { get; set; }
+
+        [JsonPropertyName("error")] public string? Error { get; set; }
+
+        [JsonPropertyName("path")] public string? Path { get; set; }
+
+        [JsonPropertyName("targetFile")] public string? TargetFile { get; set; }
+
+        [JsonPropertyName("displayTargetFile")] public string? DisplayTargetFile { get; set; }
+
+        /// <summary>The manifest a result refers to, preferring the friendliest identifier the CLI supplied.</summary>
+        public string? Manifest => DisplayTargetFile ?? TargetFile ?? Path;
+
         /// <summary>
         /// Returns the first snapshot URL from `snyk monitor --json` output (object for one manifest, array
         /// under --all-projects), or null when the output is empty, unparseable, or carries no uri.
         /// </summary>
-        public static string? FirstUri(string json)
+        public static string? FirstUri(string json) =>
+            Parse(json).FirstOrDefault(r => !string.IsNullOrWhiteSpace(r.Uri))?.Uri;
+
+        /// <summary>
+        /// Returns the manifests that failed to monitor (<c>ok:false</c>) from `snyk monitor --json` output.
+        /// Under --all-projects a non-zero exit is usually a partial failure — some manifests monitored, one
+        /// errored — and the error text lives here in stdout rather than stderr.
+        /// </summary>
+        public static IReadOnlyList<SnykMonitorResult> Failures(string json) =>
+            Parse(json).Where(r => r.Ok == false).ToList();
+
+        /// <summary>Parses monitor output (single object or --all-projects array) into results, skipping
+        /// any element that will not deserialize so one malformed entry does not discard the rest.</summary>
+        private static IReadOnlyList<SnykMonitorResult> Parse(string json)
         {
             if (string.IsNullOrWhiteSpace(json))
             {
-                return null;
+                return [];
             }
 
             try
             {
                 using var doc = JsonDocument.Parse(json);
-                var results = doc.RootElement.ValueKind == JsonValueKind.Array
-                    ? doc.RootElement.EnumerateArray().Select(e => e.Deserialize<SnykMonitorResult>())
-                    : [doc.RootElement.Deserialize<SnykMonitorResult>()];
+                var elements = new List<JsonElement>();
+                if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                {
+                    elements.AddRange(doc.RootElement.EnumerateArray());
+                }
+                else
+                {
+                    elements.Add(doc.RootElement);
+                }
 
-                return results.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r?.Uri))?.Uri;
+                var results = new List<SnykMonitorResult>(elements.Count);
+                foreach (var element in elements)
+                {
+                    try
+                    {
+                        if (element.Deserialize<SnykMonitorResult>() is { } result)
+                        {
+                            results.Add(result);
+                        }
+                    }
+                    catch (JsonException)
+                    {
+                        // A single unparseable entry (e.g. a non-string error object) must not lose the others.
+                    }
+                }
+
+                return results;
             }
             catch (JsonException)
             {
-                return null;
+                return [];
             }
         }
     }
