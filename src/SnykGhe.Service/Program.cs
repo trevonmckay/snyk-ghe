@@ -112,6 +112,15 @@ else
     builder.Services.AddHostedService<ChannelWebhookWorker>();
 }
 
+// On SIGTERM (replica scale-in or a new revision) let an in-flight scan finish before the host
+// forces shutdown. The queue worker's StopAsync stops accepting new messages and drains what's
+// running; this window has to be long enough for that drain and must stay below the container's
+// terminationGracePeriodSeconds (300s in the bicep) so the drain completes before SIGKILL.
+builder.Services.Configure<HostOptions>(options =>
+{
+    options.ShutdownTimeout = TimeSpan.FromSeconds(240);
+});
+
 // Self-service App registration (manifest flow) + post-install setup page.
 builder.Services.AddHttpClient<GitHubAppManifestService>();
 builder.Services.AddSingleton<RegistrationStateProtector>();

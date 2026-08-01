@@ -544,6 +544,10 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
       ], snykAuthAppSecrets)
     }
     template: {
+      // Give an in-flight scan time to finish before SIGKILL when a replica is scaled in or the
+      // revision is replaced. The host's ShutdownTimeout (Program.cs) drains the Service Bus
+      // processor within this window; it must stay below this value so the drain completes first.
+      terminationGracePeriodSeconds: 300
       containers: [
         {
           name: 'webhookservice'
