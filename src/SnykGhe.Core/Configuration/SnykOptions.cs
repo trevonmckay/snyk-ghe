@@ -82,6 +82,13 @@ namespace SnykGhe.Core.Configuration
         /// <summary>Timeout for a single Snyk CLI invocation.</summary>
         public int ScanTimeoutSeconds { get; set; } = 600;
 
+        /// <summary>
+        /// Timeout for a single <c>snyk monitor</c> invocation. Monitoring uploads a dependency
+        /// snapshot to Snyk and can be slower than a test scan on large repos, so it gets its own
+        /// (larger) bound rather than sharing <see cref="ScanTimeoutSeconds"/>.
+        /// </summary>
+        public int MonitorTimeoutSeconds { get; set; } = 900;
+
         /// <summary>When true, open a bot-authored remediation PR when fixable upgrades are found.</summary>
         public bool OpenFixPullRequests { get; set; } = true;
 
