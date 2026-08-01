@@ -94,31 +94,46 @@ namespace SnykGhe.Core.Storage
             }, cancellationToken);
         }
 
-        public async Task SetMappingAsync(string gitHubOrg, string snykOrgId, string? severityThreshold, string? ecosystem, CancellationToken cancellationToken)
+        public async Task SetOrgPolicyAsync(string gitHubOrg, OrgPolicyOverlay overlay, CancellationToken cancellationToken)
         {
-            var sets = new List<string> { "#org = :org", "#snyk = :snyk" };
-            var names = new Dictionary<string, string> { ["#org"] = "GitHubOrg", ["#snyk"] = "SnykOrgId" };
-            var values = new Dictionary<string, AttributeValue> { [":org"] = new(gitHubOrg), [":snyk"] = new(snykOrgId) };
+            // Authoritative overlay write: SET the fields that have a value, REMOVE the ones cleared to null.
+            // Touching only the overlay attributes preserves the GitHub-seeded fields (installation id, account).
+            var sets = new List<string> { "#org = :org", "#susp = :susp" };
+            var removes = new List<string>();
+            var names = new Dictionary<string, string> { ["#org"] = "GitHubOrg", ["#susp"] = "Suspended" };
+            var values = new Dictionary<string, AttributeValue> { [":org"] = new(gitHubOrg), [":susp"] = new() { BOOL = overlay.Suspended } };
 
-            if (!string.IsNullOrWhiteSpace(severityThreshold))
+            void Apply(string placeholder, string attribute, string? value)
             {
-                sets.Add("#sev = :sev");
-                names["#sev"] = "SeverityThreshold";
-                values[":sev"] = new(severityThreshold);
+                names[placeholder] = attribute;
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    removes.Add(placeholder);
+                }
+                else
+                {
+                    var valuePlaceholder = ":" + placeholder[1..];
+                    sets.Add($"{placeholder} = {valuePlaceholder}");
+                    values[valuePlaceholder] = new(value);
+                }
             }
 
-            if (!string.IsNullOrWhiteSpace(ecosystem))
+            Apply("#snyk", "SnykOrgId", overlay.SnykOrgId);
+            Apply("#sev", "SeverityThreshold", overlay.SeverityThreshold);
+            Apply("#eco", "Ecosystem", overlay.Ecosystem);
+            Apply("#exc", "ExcludeDirs", ExcludeList.Join(overlay.ExcludeDirs));
+
+            var expression = "SET " + string.Join(", ", sets);
+            if (removes.Count > 0)
             {
-                sets.Add("#eco = :eco");
-                names["#eco"] = "Ecosystem";
-                values[":eco"] = new(ecosystem);
+                expression += " REMOVE " + string.Join(", ", removes);
             }
 
             await _client.UpdateItemAsync(new UpdateItemRequest
             {
                 TableName = _options.TableName,
                 Key = Key(gitHubOrg),
-                UpdateExpression = "SET " + string.Join(", ", sets),
+                UpdateExpression = expression,
                 ExpressionAttributeNames = names,
                 ExpressionAttributeValues = values,
             }, cancellationToken);
@@ -145,6 +160,54 @@ namespace SnykGhe.Core.Storage
             await _client.DeleteItemAsync(_options.TableName, Key(gitHubOrg), cancellationToken);
         }
 
+        // Repo config shares the installations table under a reserved key prefix that cannot collide with a
+        // GitHub org login (logins are alphanumeric + hyphens), mirroring the app-config store's convention.
+        private const string RepoConfigPrefix = "$repoconfig:";
+
+        private Dictionary<string, AttributeValue> RepoKey(string gitHubOrg, string repo) =>
+            new() { [KeyAttribute] = new AttributeValue($"{RepoConfigPrefix}{Normalize(gitHubOrg)}/{repo.ToLowerInvariant()}") };
+
+        public async Task<RepoScanConfig?> FindRepoConfigAsync(string gitHubOrg, string repo, CancellationToken cancellationToken)
+        {
+            var response = await _client.GetItemAsync(_options.TableName, RepoKey(gitHubOrg, repo), cancellationToken);
+            if (!response.IsItemSet)
+            {
+                return null;
+            }
+
+            var item = response.Item;
+            return new RepoScanConfig
+            {
+                GitHubOrg = GetString(item, "GitHubOrg") ?? gitHubOrg,
+                Repo = GetString(item, "Repo") ?? repo,
+                ExcludeDirs = ExcludeList.Split(GetString(item, "ExcludeDirs")),
+            };
+        }
+
+        public async Task SetRepoConfigAsync(string gitHubOrg, string repo, IReadOnlyList<string> excludeDirs, CancellationToken cancellationToken)
+        {
+            // PutItem replaces the whole item, so an empty exclude list simply omits the attribute (clears it).
+            var item = new Dictionary<string, AttributeValue>
+            {
+                [KeyAttribute] = RepoKey(gitHubOrg, repo)[KeyAttribute],
+                ["GitHubOrg"] = new(gitHubOrg),
+                ["Repo"] = new(repo),
+            };
+
+            var joined = ExcludeList.Join(excludeDirs);
+            if (!string.IsNullOrEmpty(joined))
+            {
+                item["ExcludeDirs"] = new(joined);
+            }
+
+            await _client.PutItemAsync(_options.TableName, item, cancellationToken);
+        }
+
+        public async Task RemoveRepoConfigAsync(string gitHubOrg, string repo, CancellationToken cancellationToken)
+        {
+            await _client.DeleteItemAsync(_options.TableName, RepoKey(gitHubOrg, repo), cancellationToken);
+        }
+
         public async Task<GitHubInstallationRecord?> FindAsync(string gitHubOrg, CancellationToken cancellationToken)
         {
             var response = await _client.GetItemAsync(_options.TableName, Key(gitHubOrg), cancellationToken);
@@ -163,6 +226,7 @@ namespace SnykGhe.Core.Storage
                 SeverityThreshold = GetString(item, "SeverityThreshold"),
                 Ecosystem = GetString(item, "Ecosystem"),
                 Suspended = item.TryGetValue("Suspended", out var s) && s.IsBOOLSet && s.BOOL == true,
+                ExcludeDirs = ExcludeList.Split(GetString(item, "ExcludeDirs")),
             };
         }
 

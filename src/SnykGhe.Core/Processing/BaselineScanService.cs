@@ -52,7 +52,7 @@ namespace SnykGhe.Core.Processing
 
         public async Task ProcessAsync(BaselineScanRequest request, CancellationToken cancellationToken)
         {
-            var policy = await _policyResolver.ResolveAsync(request.Owner, cancellationToken);
+            var policy = await _policyResolver.ResolveAsync(request.Owner, request.Repo, cancellationToken);
             if (policy.Suspended)
             {
                 _logger.LogInformation("Installation for {Owner} is suspended; skipping baseline scan.", request.Owner);

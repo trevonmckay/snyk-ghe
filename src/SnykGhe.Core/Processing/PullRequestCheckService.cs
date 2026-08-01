@@ -57,7 +57,7 @@ namespace SnykGhe.Core.Processing
 
         public async Task ProcessAsync(ScanRequest request, CancellationToken cancellationToken)
         {
-            var policy = await _policyResolver.ResolveAsync(request.Owner, cancellationToken);
+            var policy = await _policyResolver.ResolveAsync(request.Owner, request.Repo, cancellationToken);
 
             if (policy.Suspended)
             {

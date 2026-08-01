@@ -145,6 +145,7 @@ All keys bind from `appsettings.json` / environment variables (double-underscore
 | `GitHub:WebhookSecret` | Validates `X-Hub-Signature-256` on every delivery |
 | `Snyk:Token` *or* `Snyk:OAuthClientId`/`Secret` | Snyk CLI authentication (static service-account token, or OAuth client-credentials — the service exchanges those for a short-lived token via `Snyk:OAuthTokenUrl`, default US `https://api.snyk.io/oauth2/token`; override for EU/AU) |
 | `Snyk:DefaultSnykOrgId` / `DefaultSeverityThreshold` / `DefaultEcosystem` | Fallback policy for unmapped orgs |
+| `Snyk:DefaultExcludeDirs` | Directory/file **names** passed to `snyk --exclude` for every org, before per-org and per-repo additions layer on (see [Excluding directories from scans](#excluding-directories-from-scans)). Names only — a path-like entry is dropped |
 | `Snyk:Monitor` | When `true`, also run `snyk monitor` after a PR's gating test so the Check Run's "View more details on Snyk" link points at the scan snapshot in the Snyk Web UI. Off by default — it creates a short-lived Snyk project per PR (the PR head branch is the target reference). Also drives `--report` publishing for the Code and IaC scans. Does not affect the default-branch baseline (`Snyk:ScanDefaultBranch`) |
 | `Snyk:ScanDefaultBranch` | When `true` (default), a push to a repo's default branch runs a baseline scan and `snyk monitor`s it under the default-branch target reference — the durable snapshot Snyk alerts against as new vulnerabilities are disclosed. Set `false` to disable the push-triggered baseline |
 | `Snyk:CoalesceBaselineScans` | When `true` (default), baseline scans are coordinated through the coordination table: a burst of pushes to one branch collapses to a single in-flight scan (latest commit wins), two workers never scan the same branch at once, and a commit already scanned (a Service Bus redelivery, or a push the in-flight scan's clone already picked up) is skipped. Set `false` to scan every push independently |
@@ -154,7 +155,7 @@ All keys bind from `appsettings.json` / environment variables (double-underscore
 | `Snyk:ScmIntegrationId` | Snyk SCM integration id (**Settings → Integrations → _your SCM_ → Integration ID**). Required when `Snyk:Engines:Code=Api`, which reads repository source through the integration rather than from the clone. Unused by the CLI engine |
 | `Storage:Provider` | `AzureTable` or `DynamoDb` |
 | `Storage:TableName` / `Storage:ScanCoordinationTableName` | Table/collection names for the installation registry (`installations`) and baseline-scan coordination (`scancoordination`). Both are created at startup |
-| `Storage:AdminApiKey` | Guards the `PUT /api/admin/orgs/{org}` mapping endpoint and the registration flow (closed if unset) |
+| `Storage:AdminApiKey` | Guards the `/api/admin/orgs` policy endpoints, the manual-scan endpoint, and the registration flow (closed if unset) |
 | `SecretRepository:Provider` | `AzureKeyVault` / `AwsSecretsManager` / `None` — where the registration flow writes generated secrets |
 | `Registration:PublicBaseUrl` | This service's public URL used in the manifest (falls back to the request host) |
 | `Registration:WebhookUrl` | Webhook URL placed in the manifest when the public webhook endpoint is a different host than this service (scale-to-zero topology: the Function). Falls back to `{PublicBaseUrl}/api/github/webhooks` |
@@ -203,12 +204,52 @@ It covers Open Source, so `OpenSource=Api` keeps publishing exactly as before.
 snapshots therefore stop being refreshed on that engine, and the Code check's deep link resolves only
 if a project of that name already exists — for example one imported by the native SCM integration.
 
-Map a GitHub org to a Snyk org at runtime:
+Map a GitHub org to a Snyk org (and set its policy overrides) at runtime. `PUT` replaces the org's
+whole policy overlay — any field you omit resets to its default; `PATCH` changes only the fields you
+send (send an explicit `null` to clear one):
 
 ```bash
+# Replace the overlay (absent fields reset to defaults)
 curl -X PUT https://<host>/api/admin/orgs/my-github-org \
   -H "X-Admin-Key: <admin-key>" -H "Content-Type: application/json" \
   -d '{"snykOrgId":"<snyk-org-uuid>","severityThreshold":"high","ecosystem":"nuget"}'
+
+# Merge — change only the gate, leave the rest untouched
+curl -X PATCH https://<host>/api/admin/orgs/my-github-org \
+  -H "X-Admin-Key: <admin-key>" -H "Content-Type: application/json" \
+  -d '{"severityThreshold":"critical"}'
+```
+
+> **Breaking change (from the earlier single-`PUT` mapping endpoint):** `snykOrgId` is now **optional**
+> on `PUT /api/admin/orgs/{org}`, so an org can carry only a policy override or an exclude list without a
+> mapping. Unknown JSON fields are rejected with `400` rather than silently ignored.
+
+#### Excluding directories from scans
+
+`snyk --all-projects` scans every manifest it finds. When one manifest cannot be resolved (for
+example a package registry that 500s on a large native-dependency tree) it fails the whole scan.
+`snyk --exclude` skips named directories/files, and — unlike a checked-in `.snyk` policy, which Snyk
+does **not** honor for open-source `--all-projects` — it is the only lever a generic multi-tenant
+service has. Exclude names apply to the Open Source scan and `snyk monitor`.
+
+The list is **additive**: the global `Snyk:DefaultExcludeDirs`, the org list, and the repo list are
+unioned. Entries are **names, not paths** — a value containing `/` or `\` is rejected at write time
+(`400`) and defensively dropped at scan time, because a path errors the CLI and fails the entire scan.
+
+```bash
+# Org-wide excludes (PATCH leaves snykOrgId / gate / ecosystem untouched)
+curl -X PATCH https://<host>/api/admin/orgs/my-github-org \
+  -H "X-Admin-Key: <admin-key>" -H "Content-Type: application/json" \
+  -d '{"excludeDirs":["node_modules","obj"]}'
+
+# Additional excludes for one repo
+curl -X PUT https://<host>/api/admin/orgs/my-github-org/repos/my-repo \
+  -H "X-Admin-Key: <admin-key>" -H "Content-Type: application/json" \
+  -d '{"excludeDirs":["docling-sidecar"]}'
+
+# Inspect, then clear the repo overrides
+curl https://<host>/api/admin/orgs/my-github-org/repos/my-repo -H "X-Admin-Key: <admin-key>"
+curl -X DELETE https://<host>/api/admin/orgs/my-github-org/repos/my-repo -H "X-Admin-Key: <admin-key>"
 ```
 
 Manually trigger a baseline scan (the same scan a push to the default branch runs). Scans the
