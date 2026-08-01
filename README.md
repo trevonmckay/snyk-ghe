@@ -157,6 +157,8 @@ All keys bind from `appsettings.json` / environment variables (double-underscore
 | `Storage:Provider` | `AzureTable` or `DynamoDb` |
 | `Storage:TableName` / `Storage:ScanCoordinationTableName` | Table/collection names for the installation registry (`installations`) and baseline-scan coordination (`scancoordination`). Both are created at startup |
 | `Storage:AdminApiKey` | Guards the `/api/admin/orgs` policy endpoints, the manual-scan endpoint, and the registration flow (closed if unset) |
+| `ServiceBus:MaxConcurrentCalls` / `Sqs:MaxConcurrentMessages` | Scans processed at once by one replica/instance (default `1` — scans are heavy, so concurrency is added by scaling out, not by loading one host). On Azure, leave this at 1 and raise the deploy's `maxReplicas`; on AWS (one always-on instance) this **is** the concurrency knob, so raise it and the instance Cpu/Memory together |
+| `Host:ShutdownTimeoutSeconds` | Seconds the .NET host waits for the queue worker to drain in-flight scans on `SIGTERM` before forcing shutdown (default `240`). Keep it below the platform's termination grace period (Azure `terminationGracePeriodSeconds`, deploy-set to `300`) so the drain finishes before `SIGKILL` |
 | `SecretRepository:Provider` | `AzureKeyVault` / `AwsSecretsManager` / `None` — where the registration flow writes generated secrets |
 | `Registration:PublicBaseUrl` | This service's public URL used in the manifest (falls back to the request host) |
 | `Registration:WebhookUrl` | Webhook URL placed in the manifest when the public webhook endpoint is a different host than this service (scale-to-zero topology: the Function). Falls back to `{PublicBaseUrl}/api/github/webhooks` |
@@ -298,7 +300,7 @@ up a working deployment without assembling the resource graph yourself. Pick a c
 | Template | Cloud | Shape |
 | --- | --- | --- |
 | `.azure/main.bicep` | Azure | Always-on Container App (1–10 replicas), Service Bus, Table Storage, Key Vault, ACR |
-| `.azure/main-functions.bicep` | Azure | Azure Function webhook front door; the processing Container App scales to zero (0–10 replicas) |
+| `.azure/main-functions.bicep` | Azure | Azure Function webhook front door; the processing Container App scales to zero (0 → `maxReplicas`, default 4 → up to 4 concurrent scans) |
 | `.aws/main.yaml` | AWS | App Runner, DynamoDB, SQS + dead-letter queue, Secrets Manager |
 
 Each directory has its own README with the deploy commands, the RBAC each template grants, and how
