@@ -180,7 +180,9 @@ namespace SnykGhe.Core.Webhooks
             }
 
             var gitHubOrg = repository.Owner.Login;
-            var policy = await _policyResolver.ResolveAsync(gitHubOrg, cancellationToken);
+            // Cleanup only needs the Snyk org mapping; excludes don't apply to project teardown, so skip the
+            // per-repo config lookup by resolving org-level policy alone.
+            var policy = await _policyResolver.ResolveAsync(gitHubOrg, repo: null, cancellationToken);
 
             if (policy.Suspended)
             {

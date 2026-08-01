@@ -72,6 +72,13 @@ namespace SnykGhe.Core.Configuration
         /// <summary>Default manifest ecosystem: npm | nuget | maven | gradle | pip | go | none.</summary>
         public string DefaultEcosystem { get; set; } = "nuget";
 
+        /// <summary>
+        /// Directory/file names passed to <c>snyk --exclude</c> for every org, before per-org and per-repo
+        /// additions layer on top. Names only — a path-like entry (containing <c>/</c> or <c>\</c>) is dropped,
+        /// because a path errors the CLI and fails the whole <c>--all-projects</c> scan. Empty by default.
+        /// </summary>
+        public List<string> DefaultExcludeDirs { get; set; } = [];
+
         /// <summary>Timeout for a single Snyk CLI invocation.</summary>
         public int ScanTimeoutSeconds { get; set; } = 600;
 

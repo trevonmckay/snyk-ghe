@@ -115,6 +115,20 @@ namespace SnykGhe.Core.Snyk
             }
         }
 
+        /// <summary>
+        /// Appends <c>--exclude</c> with the policy's directory/file names when any are configured. The names
+        /// are already sanitized by the resolver (trimmed, de-duplicated, path-like entries dropped), so this
+        /// only joins them. Applies to the <c>--all-projects</c> Open Source scan and monitor; the value is a
+        /// comma-separated list of names, never paths.
+        /// </summary>
+        public static void AddExcludeArgs(List<string> args, ResolvedPolicy policy)
+        {
+            if (policy.ExcludeDirs.Count > 0)
+            {
+                args.Add($"--exclude={string.Join(",", policy.ExcludeDirs)}");
+            }
+        }
+
         public static bool IsNuGet(string ecosystem) =>
             ecosystem.Equals(NuGetEcosystem, StringComparison.OrdinalIgnoreCase);
 

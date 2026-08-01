@@ -36,5 +36,8 @@ namespace SnykGhe.Core.Storage
         public string? Ecosystem { get; set; }
 
         public bool Suspended { get; set; }
+
+        /// <summary>Org-level Snyk exclude names, stored newline-delimited (see <see cref="Configuration.ExcludeList"/>).</summary>
+        public string? ExcludeDirs { get; set; }
     }
 }
