@@ -598,8 +598,12 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
         // the HTTP rule is required so an admin/registration call to the ingress can wake the app from zero.
         // A custom rule replaces the default HTTP scaler, so without an explicit http rule the ingress would
         // have nothing to activate the app and admin requests would hang.
+        //
+        // Concurrency: KEDA targets messageCount queued messages per replica, so messageCount '1' gives one
+        // replica per queued message up to maxReplicas. Each replica processes one message at a time
+        // (ServiceBus:MaxConcurrentCalls = 1), so maxReplicas 4 yields up to 4 concurrent scans.
         minReplicas: 0
-        maxReplicas: 10
+        maxReplicas: 4
         rules: [
           {
             name: 'servicebus-queue'
@@ -608,7 +612,7 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
               metadata: {
                 namespace: serviceBus.name
                 queueName: serviceBusQueueName
-                messageCount: '5'
+                messageCount: '1'
               }
               identity: uami.id
             }

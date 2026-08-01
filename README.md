@@ -297,7 +297,7 @@ up a working deployment without assembling the resource graph yourself. Pick a c
 | Template | Cloud | Shape |
 | --- | --- | --- |
 | `.azure/main.bicep` | Azure | Always-on Container App (1–10 replicas), Service Bus, Table Storage, Key Vault, ACR |
-| `.azure/main-functions.bicep` | Azure | Azure Function webhook front door; the processing Container App scales to zero (0–10 replicas) |
+| `.azure/main-functions.bicep` | Azure | Azure Function webhook front door; the processing Container App scales to zero (0–4 replicas → up to 4 concurrent scans) |
 | `.aws/main.yaml` | AWS | App Runner, DynamoDB, SQS + dead-letter queue, Secrets Manager |
 
 Each directory has its own README with the deploy commands, the RBAC each template grants, and how
