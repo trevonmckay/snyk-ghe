@@ -53,7 +53,8 @@ namespace SnykGhe.Core.Snyk
             IReadOnlyList<string> args,
             string workingDirectory,
             CancellationToken cancellationToken,
-            bool applyTimeout = true)
+            bool applyTimeout = true,
+            int? timeoutSecondsOverride = null)
         {
             var (authOk, oauthToken) = await ResolveOAuthTokenAsync(cancellationToken);
             if (!authOk)
@@ -61,10 +62,11 @@ namespace SnykGhe.Core.Snyk
                 return new SnykCliOutcome { AuthenticationFailed = true };
             }
 
+            var timeoutSeconds = timeoutSecondsOverride ?? _options.ScanTimeoutSeconds;
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             if (applyTimeout)
             {
-                timeout.CancelAfter(TimeSpan.FromSeconds(_options.ScanTimeoutSeconds));
+                timeout.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
             }
 
             try
@@ -85,7 +87,7 @@ namespace SnykGhe.Core.Snyk
             }
             catch (OperationCanceledException) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
-                _logger.LogWarning("Snyk CLI timed out after {Seconds}s in {Dir}", _options.ScanTimeoutSeconds, workingDirectory);
+                _logger.LogWarning("Snyk CLI timed out after {Seconds}s in {Dir}", timeoutSeconds, workingDirectory);
                 return new SnykCliOutcome { TimedOut = true };
             }
         }

@@ -54,7 +54,12 @@ namespace SnykGhe.Core.Snyk
             SnykCliOutcome outcome;
             try
             {
-                outcome = await _cli.RunAsync(args, context.WorkingDirectory, cancellationToken, applyTimeout: false);
+                outcome = await _cli.RunAsync(
+                    args,
+                    context.WorkingDirectory,
+                    cancellationToken,
+                    applyTimeout: true,
+                    timeoutSecondsOverride: _options.MonitorTimeoutSeconds);
             }
             catch (Exception ex)
             {
@@ -65,6 +70,14 @@ namespace SnykGhe.Core.Snyk
             if (outcome.AuthenticationFailed)
             {
                 _logger.LogWarning("Could not obtain a Snyk OAuth token for monitor; check will have no Snyk link.");
+                return null;
+            }
+
+            if (outcome.TimedOut)
+            {
+                _logger.LogWarning(
+                    "Snyk monitor timed out after {Seconds}s in {Dir}; check will have no Snyk link.",
+                    _options.MonitorTimeoutSeconds, context.WorkingDirectory);
                 return null;
             }
 
