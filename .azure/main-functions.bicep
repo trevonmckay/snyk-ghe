@@ -30,6 +30,9 @@ param snykDefaultEcosystem string = 'nuget'
 @description('When true, also run `snyk monitor` so the PR check can deep-link to the scan in the Snyk Web UI. Creates a Snyk project per repository.')
 param snykMonitor bool = false
 
+@description('Timeout in seconds for a single `snyk monitor` invocation. Monitoring uploads a dependency snapshot and can outrun a test scan on large repos, so it has its own bound. On timeout the monitor is skipped and the check simply has no Snyk link.')
+param snykMonitorTimeoutSeconds int = 900
+
 @description('When true, run `snyk code test` (SAST) and publish a separate sast/snyk Check Run. Requires the Snyk Code product on the org.')
 param snykScanCode bool = false
 
@@ -71,6 +74,18 @@ param adminApiKey string
 
 @description('Service Bus queue that buffers webhook deliveries between the Function and the scan worker.')
 param serviceBusQueueName string = 'webhook-deliveries'
+
+@description('Maximum number of scan-processor replicas. With one message processed per replica (see serviceBusMessageCount) this is the ceiling on concurrent scans. Scale to zero is preserved (min replicas stays 0).')
+param maxReplicas int = 4
+
+@description('KEDA azure-servicebus target: queued messages per replica. 1 gives one replica per queued message (up to maxReplicas), so with the default per-replica concurrency of 1 the effective concurrent-scan count equals the replica count.')
+param serviceBusMessageCount int = 1
+
+@description('Seconds a replica may take to drain an in-flight scan after SIGTERM (scale-in or a new revision) before the platform sends SIGKILL. Must exceed the host shutdown timeout so the in-process drain finishes first.')
+param terminationGracePeriodSeconds int = 300
+
+@description('Seconds the .NET host waits for the queue worker to drain in-flight scans on shutdown (maps to Host:ShutdownTimeoutSeconds). Keep below terminationGracePeriodSeconds so the drain completes before SIGKILL.')
+param hostShutdownTimeoutSeconds int = 240
 
 @description('dotnet-isolated runtime version for the Function. Must be a version Flex Consumption supports in your region.')
 param functionRuntimeVersion string = '10.0'
@@ -547,7 +562,7 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
       // Give an in-flight scan time to finish before SIGKILL when a replica is scaled in or the
       // revision is replaced. The host's ShutdownTimeout (Program.cs) drains the Service Bus
       // processor within this window; it must stay below this value so the drain completes first.
-      terminationGracePeriodSeconds: 300
+      terminationGracePeriodSeconds: terminationGracePeriodSeconds
       containers: [
         {
           name: 'webhookservice'
@@ -575,6 +590,7 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
             { name: 'Snyk__DefaultSeverityThreshold', value: snykDefaultSeverity }
             { name: 'Snyk__DefaultEcosystem', value: snykDefaultEcosystem }
             { name: 'Snyk__Monitor', value: string(snykMonitor) }
+            { name: 'Snyk__MonitorTimeoutSeconds', value: string(snykMonitorTimeoutSeconds) }
             { name: 'Snyk__ScanCode', value: string(snykScanCode) }
             { name: 'Snyk__ScanIac', value: string(snykScanIac) }
             { name: 'Snyk__Engines__OpenSource', value: snykEngineOpenSource }
@@ -585,6 +601,7 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
             { name: 'Storage__AdminApiKey', secretRef: 'admin-api-key' }
             { name: 'ServiceBus__FullyQualifiedNamespace', value: '${serviceBus.name}.servicebus.windows.net' }
             { name: 'ServiceBus__QueueName', value: serviceBusQueueName }
+            { name: 'Host__ShutdownTimeoutSeconds', value: string(hostShutdownTimeoutSeconds) }
             // Registration runs here, but the manifest's webhook URL must point at the Function front door,
             // not this container — otherwise GitHub would deliver webhooks straight to the scale-to-zero app.
             { name: 'Registration__PublicBaseUrl', value: 'https://${appName}.${envDefaultDomain}' }
@@ -602,8 +619,12 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
         // the HTTP rule is required so an admin/registration call to the ingress can wake the app from zero.
         // A custom rule replaces the default HTTP scaler, so without an explicit http rule the ingress would
         // have nothing to activate the app and admin requests would hang.
+        //
+        // Concurrency: KEDA targets serviceBusMessageCount queued messages per replica, so a value of 1 gives
+        // one replica per queued message up to maxReplicas. Each replica processes one message at a time
+        // (ServiceBus:MaxConcurrentCalls defaults to 1), so maxReplicas is the concurrent-scan ceiling.
         minReplicas: 0
-        maxReplicas: 10
+        maxReplicas: maxReplicas
         rules: [
           {
             name: 'servicebus-queue'
@@ -612,7 +633,7 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
               metadata: {
                 namespace: serviceBus.name
                 queueName: serviceBusQueueName
-                messageCount: '5'
+                messageCount: string(serviceBusMessageCount)
               }
               identity: uami.id
             }
