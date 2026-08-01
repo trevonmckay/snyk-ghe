@@ -90,8 +90,10 @@ namespace SnykGhe.Core.Storage
             await _table.DeleteEntityAsync(GitHubInstallationRecordEntity.Partition, Normalize(gitHubOrg), ETag.All, cancellationToken);
         }
 
-        private static string RepoRowKey(string gitHubOrg, string repo) =>
-            $"{Normalize(gitHubOrg)}/{repo.ToLowerInvariant()}";
+        // Azure Table Storage forbids '/' (and '\', '#', '?') in a RowKey, so org and repo are joined with a
+        // colon — a character GitHub org logins and repo names cannot contain, keeping the key unambiguous.
+        internal static string RepoRowKey(string gitHubOrg, string repo) =>
+            $"{Normalize(gitHubOrg)}:{repo.ToLowerInvariant()}";
 
         public async Task<RepoScanConfig?> FindRepoConfigAsync(string gitHubOrg, string repo, CancellationToken cancellationToken)
         {
