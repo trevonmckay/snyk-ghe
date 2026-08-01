@@ -22,5 +22,8 @@
         public string? Ecosystem { get; set; }
 
         public bool Suspended { get; set; }
+
+        /// <summary>Org-level Snyk <c>--exclude</c> directory/file names, applied to every repo in the org.</summary>
+        public IReadOnlyList<string> ExcludeDirs { get; set; } = [];
     }
 }

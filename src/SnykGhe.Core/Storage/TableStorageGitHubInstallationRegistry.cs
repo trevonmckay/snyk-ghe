@@ -45,28 +45,31 @@ namespace SnykGhe.Core.Storage
             await _table.UpsertEntityAsync(entity, TableUpdateMode.Merge, cancellationToken);
         }
 
-        public async Task SetMappingAsync(string gitHubOrg, string snykOrgId, string? severityThreshold, string? ecosystem, CancellationToken cancellationToken)
+        public async Task SetOrgPolicyAsync(string gitHubOrg, OrgPolicyOverlay overlay, CancellationToken cancellationToken)
         {
-            // A typed entity would serialize its value-type properties (InstallationId, AccountId, Suspended)
-            // as 0 / false even when unset, and Merge would overwrite the seeded GitHub values. Write a
-            // partial entity carrying only the mapping properties so Merge leaves everything else intact.
-            var entity = new TableEntity(GitHubInstallationRecordEntity.Partition, Normalize(gitHubOrg))
-            {
-                ["GitHubOrg"] = gitHubOrg,
-                ["SnykOrgId"] = snykOrgId,
-            };
+            // Read-modify-write with Replace: Merge cannot clear a property, so to make a null overlay field
+            // actually reset the override we rewrite the whole entity. The seeded GitHub fields are read back
+            // from the existing row (or defaulted for an admin-created row) so Replace preserves them.
+            var key = Normalize(gitHubOrg);
+            var existing = await _table.GetEntityIfExistsAsync<GitHubInstallationRecordEntity>(
+                GitHubInstallationRecordEntity.Partition, key, cancellationToken: cancellationToken);
 
-            if (!string.IsNullOrWhiteSpace(severityThreshold))
+            var entity = existing.HasValue && existing.Value is { } current
+                ? current
+                : new GitHubInstallationRecordEntity { RowKey = key, GitHubOrg = gitHubOrg };
+
+            if (string.IsNullOrEmpty(entity.GitHubOrg))
             {
-                entity["SeverityThreshold"] = severityThreshold;
+                entity.GitHubOrg = gitHubOrg;
             }
 
-            if (!string.IsNullOrWhiteSpace(ecosystem))
-            {
-                entity["Ecosystem"] = ecosystem;
-            }
+            entity.SnykOrgId = overlay.SnykOrgId;
+            entity.SeverityThreshold = overlay.SeverityThreshold;
+            entity.Ecosystem = overlay.Ecosystem;
+            entity.Suspended = overlay.Suspended;
+            entity.ExcludeDirs = ExcludeList.Join(overlay.ExcludeDirs);
 
-            await _table.UpsertEntityAsync(entity, TableUpdateMode.Merge, cancellationToken);
+            await _table.UpsertEntityAsync(entity, TableUpdateMode.Replace, cancellationToken);
         }
 
         public async Task SetSuspendedAsync(string gitHubOrg, bool suspended, CancellationToken cancellationToken)
@@ -85,6 +88,45 @@ namespace SnykGhe.Core.Storage
         public async Task RemoveAsync(string gitHubOrg, CancellationToken cancellationToken)
         {
             await _table.DeleteEntityAsync(GitHubInstallationRecordEntity.Partition, Normalize(gitHubOrg), ETag.All, cancellationToken);
+        }
+
+        private static string RepoRowKey(string gitHubOrg, string repo) =>
+            $"{Normalize(gitHubOrg)}/{repo.ToLowerInvariant()}";
+
+        public async Task<RepoScanConfig?> FindRepoConfigAsync(string gitHubOrg, string repo, CancellationToken cancellationToken)
+        {
+            var response = await _table.GetEntityIfExistsAsync<RepoScanConfigEntity>(
+                RepoScanConfigEntity.Partition, RepoRowKey(gitHubOrg, repo), cancellationToken: cancellationToken);
+
+            if (!response.HasValue || response.Value is not { } entity)
+            {
+                return null;
+            }
+
+            return new RepoScanConfig
+            {
+                GitHubOrg = entity.GitHubOrg,
+                Repo = entity.Repo,
+                ExcludeDirs = ExcludeList.Split(entity.ExcludeDirs),
+            };
+        }
+
+        public async Task SetRepoConfigAsync(string gitHubOrg, string repo, IReadOnlyList<string> excludeDirs, CancellationToken cancellationToken)
+        {
+            var entity = new RepoScanConfigEntity
+            {
+                RowKey = RepoRowKey(gitHubOrg, repo),
+                GitHubOrg = gitHubOrg,
+                Repo = repo,
+                ExcludeDirs = ExcludeList.Join(excludeDirs),
+            };
+
+            await _table.UpsertEntityAsync(entity, TableUpdateMode.Replace, cancellationToken);
+        }
+
+        public async Task RemoveRepoConfigAsync(string gitHubOrg, string repo, CancellationToken cancellationToken)
+        {
+            await _table.DeleteEntityAsync(RepoScanConfigEntity.Partition, RepoRowKey(gitHubOrg, repo), ETag.All, cancellationToken);
         }
 
         public async Task<GitHubInstallationRecord?> FindAsync(string gitHubOrg, CancellationToken cancellationToken)
@@ -106,6 +148,7 @@ namespace SnykGhe.Core.Storage
                 SeverityThreshold = entity.SeverityThreshold,
                 Ecosystem = entity.Ecosystem,
                 Suspended = entity.Suspended,
+                ExcludeDirs = ExcludeList.Split(entity.ExcludeDirs),
             };
         }
     }

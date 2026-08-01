@@ -25,6 +25,7 @@ namespace SnykGhe.Core.Snyk
             var args = new List<string> { "test", "--json", "--all-projects" };
             SnykCliRunner.AddNuGetNamingArgs(args, context.Policy);
             SnykCliRunner.AddOrgArg(args, context.Policy);
+            SnykCliRunner.AddExcludeArgs(args, context.Policy);
 
             var outcome = await _cli.RunAsync(args, context.WorkingDirectory, cancellationToken);
 
