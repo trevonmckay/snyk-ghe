@@ -31,3 +31,6 @@ local.settings.json
 
 ## Support-ticket drafts — contain internal org/target/service-account ids
 tickets/
+
+## Local git worktrees
+.worktrees/
