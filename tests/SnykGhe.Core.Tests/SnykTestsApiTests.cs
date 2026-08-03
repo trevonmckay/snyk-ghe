@@ -213,7 +213,7 @@ namespace SnykGhe.Core.Tests
                         DepGraph = System.Text.Json.Nodes.JsonNode.Parse("""{"schemaVersion":"1.3.0"}""")!,
                         ScmContext = new SnykScmContext
                         {
-                            RepositoryUrl = "https://alera-group.ghe.com/Propel/platform-connectivity",
+                            RepositoryUrl = "https://example.ghe.com/acme/sample-repo",
                             Branch = "main",
                         },
                     },
@@ -225,7 +225,7 @@ namespace SnykGhe.Core.Tests
             await client.Tests.CreateAsync(OrgId, request, CancellationToken.None);
 
             Assert.Contains(
-                "\"scm_context\":{\"branch\":\"main\",\"repo_url\":\"https://alera-group.ghe.com/Propel/platform-connectivity\"}",
+                "\"scm_context\":{\"branch\":\"main\",\"repo_url\":\"https://example.ghe.com/acme/sample-repo\"}",
                 handler.PostedBody);
         }
 

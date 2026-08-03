@@ -79,14 +79,14 @@ namespace SnykGhe.Core.Tests
             WorkingDirectory = @"C:\work\repo",
             Policy = new ResolvedPolicy
             {
-                GitHubOrg = "Propel",
+                GitHubOrg = "acme",
                 SnykOrgId = OrgId,
                 SeverityThreshold = "high",
                 Ecosystem = "npm",
             },
-            RemoteRepoUrl = "https://alera-group.ghe.com/Propel/platform-connectivity",
+            RemoteRepoUrl = "https://example.ghe.com/acme/sample-repo",
             TargetReference = "main",
-            ProjectName = "Propel/platform-connectivity",
+            ProjectName = "acme/sample-repo",
             Publish = publish,
         };
 
