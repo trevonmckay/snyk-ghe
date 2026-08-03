@@ -90,10 +90,13 @@ namespace SnykGhe.Core.Webhooks
         }
 
         /// <summary>
-        /// Re-runs a scan when a user clicks "Re-run" on the Snyk check run in a PR's Checks tab. GitHub
-        /// delivers <c>check_run</c> with action <c>rerequested</c> only to the App that owns the check run,
-        /// so this is always our own check. A check run with no associated pull request (e.g. a branch not
-        /// in a PR) is ignored — this App only scans pull requests.
+        /// Re-runs a scan when a user re-triggers the Snyk check run from a PR's Checks tab. Two triggers land
+        /// here, both delivered by GitHub only to the App that owns the check run (so it is always our own
+        /// check): <c>rerequested</c> (the built-in "Re-run", when GitHub surfaces it) and
+        /// <c>requested_action</c> (our "Re-scan" button — the reliable path, since GitHub does not offer a
+        /// built-in per-check re-run for third-party App checks). Only one action button is defined, so the
+        /// requested_action identifier is not inspected. A check run with no associated pull request (e.g. a
+        /// branch not in a PR) is ignored — this App only scans pull requests.
         /// </summary>
         protected override async ValueTask ProcessCheckRunWebhookAsync(
             WebhookHeaders headers,
@@ -102,7 +105,8 @@ namespace SnykGhe.Core.Webhooks
             CancellationToken cancellationToken = default)
         {
             if (checkRunEvent.Action is not string actionName ||
-                !string.Equals(actionName, "rerequested", StringComparison.OrdinalIgnoreCase))
+                !(string.Equals(actionName, "rerequested", StringComparison.OrdinalIgnoreCase) ||
+                  string.Equals(actionName, "requested_action", StringComparison.OrdinalIgnoreCase)))
             {
                 return;
             }

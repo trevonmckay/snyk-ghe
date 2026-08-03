@@ -152,7 +152,7 @@ namespace SnykGhe.Core.Processing
                         : BuildProductReport(result, policy);
 
                     await CompleteCheckAsync(credentials.Client, request, checkRunIds[result.Product],
-                        conclusion, title, summary, result.DetailsUrl, startedAt);
+                        result.Product, conclusion, title, summary, result.DetailsUrl, startedAt);
                     finalized.Add(result.Product);
 
                     _logger.LogInformation("Reported {Conclusion} for Snyk {Product} on {Owner}/{Repo} PR #{Pr}",
@@ -189,7 +189,7 @@ namespace SnykGhe.Core.Processing
 
                     try
                     {
-                        await CompleteCheckAsync(credentials.Client, request, checkRunId, CheckConclusion.Neutral,
+                        await CompleteCheckAsync(credentials.Client, request, checkRunId, product, CheckConclusion.Neutral,
                             $"Snyk {ProductLabel(product)} scan could not complete",
                             "⚠️ The scan did not finish due to an unexpected error.", null, startedAt);
                     }
@@ -231,11 +231,16 @@ namespace SnykGhe.Core.Processing
             }
         }
 
+        // Identifier reported back on the check_run 'requested_action' webhook when the Re-scan button is
+        // clicked. GitHub caps action label at 20 chars, description at 40, identifier at 20.
+        internal const string RescanActionIdentifier = "rescan";
+
         /// <summary>Moves a previously posted in_progress Check Run to its terminal completed state.</summary>
         private async Task CompleteCheckAsync(
             GitHubClient client,
             ScanRequest request,
             long checkRunId,
+            SnykProduct product,
             CheckConclusion conclusion,
             string title,
             string summary,
@@ -250,8 +255,25 @@ namespace SnykGhe.Core.Processing
                 CompletedAt = DateTimeOffset.UtcNow,
                 DetailsUrl = detailsUrl,
                 Output = new NewCheckRunOutput(title, summary),
+                // GitHub offers no built-in per-check re-run for a third-party App's check runs, and it renders
+                // action buttons only on completed checks — so a "Re-scan" button is attached here. Clicking it
+                // delivers a check_run 'requested_action' webhook that re-runs the scan.
+                Actions = new List<NewCheckRunAction>
+                {
+                    new("Re-scan", RescanDescription(product), RescanActionIdentifier),
+                },
             });
         }
+
+        // Product wording for the Re-scan button description. Uses the scan-type nomenclature (SAST, IaC,
+        // Open-source) that matches the check names, which differs from ProductLabel ("Code", "IaC").
+        internal static string RescanDescription(SnykProduct product) => product switch
+        {
+            SnykProduct.OpenSource => "Re-run Snyk Open-source scan",
+            SnykProduct.Code => "Re-run Snyk SAST scan",
+            SnykProduct.Iac => "Re-run Snyk IaC scan",
+            _ => "Re-run Snyk scan",
+        };
 
         private static ProductScanResult ToProductResult(SnykScanResult scan, string? detailsUrl)
         {
