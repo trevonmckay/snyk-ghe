@@ -61,6 +61,58 @@ namespace SnykGhe.Core.Tests
         }
 
         [Fact]
+        public void Parse_DropsResultsIgnoredInWebUi()
+        {
+            // An "accepted" suppression is an ignore created in the Snyk Web UI (Consistent Ignores).
+            // Snyk Code keeps the result in the SARIF and marks it suppressed rather than removing it.
+            const string json = """
+        {
+          "runs": [
+            {
+              "results": [
+                { "ruleId": "cs/HardcodedSecret", "level": "error", "message": { "text": "Hardcoded Non-Cryptographic Secret" },
+                  "locations": [ { "physicalLocation": { "artifactLocation": { "uri": "src/auth/session.ts" }, "region": { "startLine": 14 } } } ],
+                  "suppressions": [
+                    { "guid": "11111111-1111-1111-1111-111111111111", "status": "accepted", "kind": "external",
+                      "justification": "Reviewed: not a secret.",
+                      "properties": { "category": "not-vulnerable" } }
+                  ] },
+                { "ruleId": "cs/HardcodedSecret", "level": "error", "message": { "text": "Open finding" },
+                  "locations": [ { "physicalLocation": { "artifactLocation": { "uri": "src/dashboard/sidebar.tsx" }, "region": { "startLine": 131 } } } ] }
+              ]
+            }
+          ]
+        }
+        """;
+
+            var result = SnykCodeResult.Parse(json);
+
+            var finding = Assert.Single(result.Findings);
+            Assert.Equal("Open finding", finding.Title);
+            Assert.Equal("src/dashboard/sidebar.tsx:131", finding.Location);
+        }
+
+        [Fact]
+        public void Parse_KeepsResultsWhoseSuppressionIsNotAccepted()
+        {
+            // A pending (underReview) or rejected suppression is not in effect; the finding still counts.
+            const string json = """
+        {
+          "runs": [ { "results": [
+            { "ruleId": "cs/Sqli", "level": "error", "message": { "text": "Pending ignore" },
+              "suppressions": [ { "guid": "g1", "status": "underReview", "kind": "external" } ] },
+            { "ruleId": "cs/Sqli", "level": "error", "message": { "text": "Rejected ignore" },
+              "suppressions": [ { "guid": "g2", "status": "rejected", "kind": "external" } ] }
+          ] } ]
+        }
+        """;
+
+            var result = SnykCodeResult.Parse(json);
+
+            Assert.Equal(2, result.Findings.Count);
+        }
+
+        [Fact]
         public void Parse_NoResults_IsCleanPass()
         {
             var result = SnykCodeResult.Parse("""{ "version": "2.1.0", "runs": [ { "results": [] } ] }""");

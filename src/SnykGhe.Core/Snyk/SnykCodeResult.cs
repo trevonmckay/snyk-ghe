@@ -33,6 +33,11 @@ namespace SnykGhe.Core.Snyk
 
                         foreach (var result in results.EnumerateArray())
                         {
+                            if (IsSuppressed(result))
+                            {
+                                continue;
+                            }
+
                             findings.Add(new SnykFinding
                             {
                                 Severity = LevelToSeverity(GetString(result, "level")),
@@ -94,6 +99,33 @@ namespace SnykGhe.Core.Snyk
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// True when a SARIF result carries a suppression that is in effect. Snyk Code emits ignores
+        /// created in the Web UI (Consistent Ignores) as <c>suppressions</c> entries on the result rather
+        /// than omitting the result — so a consumer that does not honor them re-reports ignored findings.
+        /// A suppression applies unless its <c>status</c> is <c>underReview</c> or <c>rejected</c>; an
+        /// absent status defaults to <c>accepted</c> per the SARIF 2.1.0 spec.
+        /// </summary>
+        private static bool IsSuppressed(JsonElement result)
+        {
+            if (!result.TryGetProperty("suppressions", out var suppressions)
+                || suppressions.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            foreach (var suppression in suppressions.EnumerateArray())
+            {
+                var status = GetString(suppression, "status");
+                if (status is null || status.Equals("accepted", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static string? GetString(JsonElement element, string property) =>
