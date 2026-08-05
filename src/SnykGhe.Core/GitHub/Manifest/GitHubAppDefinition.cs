@@ -13,10 +13,11 @@ namespace SnykGhe.Core.GitHub.Manifest
         /// </summary>
         public static readonly IReadOnlyDictionary<string, string> Permissions = new Dictionary<string, string>
         {
-            ["metadata"] = "read",       // mandatory baseline
-            ["checks"] = "write",        // publish the PR Check Run
-            ["contents"] = "write",      // clone to scan (read) + fix branch/commit (write)
-            ["pull_requests"] = "write", // summary comment + open fix PRs
+            ["metadata"] = "read",         // mandatory baseline
+            ["checks"] = "write",          // publish the PR Check Run
+            ["contents"] = "write",        // clone to scan (read) + fix branch/commit (write)
+            ["pull_requests"] = "write",   // summary comment + open fix PRs
+            ["security_events"] = "write", // best-effort upload of the Code SARIF to code scanning
         };
 
         /// <summary>

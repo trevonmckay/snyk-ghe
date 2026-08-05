@@ -37,6 +37,12 @@ param snykScanCode bool = false
 @description('When true, run `snyk iac test` and publish a separate iac/snyk Check Run. Repos with no IaC files skip the check.')
 param snykScanIac bool = false
 
+@description('When true, attach Snyk Code findings as PR Check Run annotations (inline on Files changed). No extra permission needed.')
+param snykAnnotatePullRequests bool = true
+
+@description('When true, best-effort upload the Snyk Code SARIF to GitHub code scanning (Security tab with source snippets). Needs code scanning / GHAS on the repo and the App security_events permission; skipped silently when absent.')
+param snykUploadSarifToCodeScanning bool = true
+
 // Each scanner picks its engine independently so a product can be moved to the Test API, or rolled back,
 // without touching the others. IaC has no engine parameter: Snyk's Test API accepts an `iac` scan config
 // but no resource type feeds it a scan component, so the app rejects Snyk:Engines:Iac=Api at startup.
@@ -316,6 +322,8 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
             { name: 'Snyk__Monitor', value: string(snykMonitor) }
             { name: 'Snyk__ScanCode', value: string(snykScanCode) }
             { name: 'Snyk__ScanIac', value: string(snykScanIac) }
+            { name: 'Snyk__AnnotatePullRequests', value: string(snykAnnotatePullRequests) }
+            { name: 'Snyk__UploadSarifToCodeScanning', value: string(snykUploadSarifToCodeScanning) }
             { name: 'Snyk__Engines__OpenSource', value: snykEngineOpenSource }
             { name: 'Snyk__Engines__Code', value: snykEngineCode }
             { name: 'Snyk__ScmIntegrationId', value: snykScmIntegrationId }

@@ -23,6 +23,7 @@ namespace SnykGhe.Core.Processing
         private readonly OrgPolicyResolver _policyResolver;
         private readonly FixPullRequestService _prFixService;
         private readonly RepositoryCloner _cloner;
+        private readonly CodeScanningSarifUploader _sarifUploader;
         private readonly GitHubOptions _gitHub;
         private readonly SnykOptions _snyk;
         private readonly ILogger _logger;
@@ -37,6 +38,7 @@ namespace SnykGhe.Core.Processing
             OrgPolicyResolver policyResolver,
             FixPullRequestService fixService,
             RepositoryCloner cloner,
+            CodeScanningSarifUploader sarifUploader,
             IOptions<GitHubOptions> gitHubOptions,
             IOptions<SnykOptions> snykOptions,
             ILogger<PullRequestCheckService> logger)
@@ -50,6 +52,7 @@ namespace SnykGhe.Core.Processing
             _policyResolver = policyResolver;
             _prFixService = fixService;
             _cloner = cloner;
+            _sarifUploader = sarifUploader;
             _gitHub = gitHubOptions.Value;
             _snyk = snykOptions.Value;
             _logger = logger;
@@ -152,11 +155,22 @@ namespace SnykGhe.Core.Processing
                         : BuildProductReport(result, policy);
 
                     await CompleteCheckAsync(credentials.Client, request, checkRunIds[result.Product],
-                        result.Product, conclusion, title, summary, result.DetailsUrl, startedAt);
+                        result.Product, conclusion, title, summary, result.DetailsUrl, startedAt, BuildAnnotations(result));
                     finalized.Add(result.Product);
 
                     _logger.LogInformation("Reported {Conclusion} for Snyk {Product} on {Owner}/{Repo} PR #{Pr}",
                         conclusion, result.Product, request.Owner, request.Repo, request.PrNumber);
+                }
+
+                // Best-effort: publish the Code SARIF to GitHub code scanning so findings render with source
+                // snippets in the Security tab. Additive to the Check Run above and posted after it, so a repo
+                // without code scanning (or the App without security_events:write) never delays or blocks the check.
+                if (_snyk.UploadSarifToCodeScanning
+                    && results.FirstOrDefault(r => r.Product == SnykProduct.Code)
+                        is { Failed: false, NotApplicable: false, RawSarif: { Length: > 0 } sarif })
+                {
+                    await _sarifUploader.UploadAsync(
+                        request.Owner, request.Repo, request.HeadSha, request.PrNumber, sarif, credentials.Token, cancellationToken);
                 }
 
                 var comment = BuildCombinedComment(results, policy);
@@ -235,7 +249,16 @@ namespace SnykGhe.Core.Processing
         // clicked. GitHub caps action label at 20 chars, description at 40, identifier at 20.
         internal const string RescanActionIdentifier = "rescan";
 
-        /// <summary>Moves a previously posted in_progress Check Run to its terminal completed state.</summary>
+        // GitHub accepts at most 50 annotations per check-run write; additional writes to the same run append
+        // the rest rather than replacing them.
+        private const int MaxAnnotationsPerRequest = 50;
+
+        /// <summary>
+        /// Moves a previously posted in_progress Check Run to its terminal completed state. When
+        /// <paramref name="annotations"/> is non-empty the run is written in batches of
+        /// <see cref="MaxAnnotationsPerRequest"/>; each write repeats the terminal state and appends its batch,
+        /// so all findings surface inline even past GitHub's 50-per-request limit.
+        /// </summary>
         private async Task CompleteCheckAsync(
             GitHubClient client,
             ScanRequest request,
@@ -245,25 +268,81 @@ namespace SnykGhe.Core.Processing
             string title,
             string summary,
             string? detailsUrl,
-            DateTimeOffset startedAt)
+            DateTimeOffset startedAt,
+            IReadOnlyList<NewCheckRunAnnotation>? annotations = null)
         {
-            await client.Check.Run.Update(request.Owner, request.Repo, checkRunId, new CheckRunUpdate
+            var completedAt = DateTimeOffset.UtcNow;
+            // A run with no annotations still needs one write to complete the check, so fall back to a single
+            // empty batch.
+            IReadOnlyList<NewCheckRunAnnotation[]> batches = annotations is { Count: > 0 }
+                ? annotations.Chunk(MaxAnnotationsPerRequest).ToArray()
+                : [Array.Empty<NewCheckRunAnnotation>()];
+
+            foreach (var batch in batches)
             {
-                Status = CheckStatus.Completed,
-                Conclusion = conclusion,
-                StartedAt = startedAt,
-                CompletedAt = DateTimeOffset.UtcNow,
-                DetailsUrl = detailsUrl,
-                Output = new NewCheckRunOutput(title, summary),
-                // GitHub offers no built-in per-check re-run for a third-party App's check runs, and it renders
-                // action buttons only on completed checks — so a "Re-scan" button is attached here. Clicking it
-                // delivers a check_run 'requested_action' webhook that re-runs the scan.
-                Actions = new List<NewCheckRunAction>
+                await client.Check.Run.Update(request.Owner, request.Repo, checkRunId, new CheckRunUpdate
                 {
-                    new("Re-scan", RescanDescription(product), RescanActionIdentifier),
-                },
-            });
+                    Status = CheckStatus.Completed,
+                    Conclusion = conclusion,
+                    StartedAt = startedAt,
+                    CompletedAt = completedAt,
+                    DetailsUrl = detailsUrl,
+                    Output = new NewCheckRunOutput(title, summary) { Annotations = batch },
+                    // GitHub offers no built-in per-check re-run for a third-party App's check runs, and it renders
+                    // action buttons only on completed checks — so a "Re-scan" button is attached here. Clicking it
+                    // delivers a check_run 'requested_action' webhook that re-runs the scan.
+                    Actions = new List<NewCheckRunAction>
+                    {
+                        new("Re-scan", RescanDescription(product), RescanActionIdentifier),
+                    },
+                });
+            }
+
+            if (batches.Count > 1)
+            {
+                _logger.LogInformation(
+                    "Attached {Count} Snyk {Product} annotations across {Batches} check-run writes for {Owner}/{Repo} PR #{Pr}",
+                    annotations!.Count, product, batches.Count, request.Owner, request.Repo, request.PrNumber);
+            }
         }
+
+        /// <summary>
+        /// Builds Check Run annotations from a product's findings so each surfaces inline on the PR. Only Snyk
+        /// Code carries file/line locations; other products (and findings without a mappable location) yield
+        /// none. Returns empty when annotation is disabled or the scan did not produce reportable findings.
+        /// </summary>
+        private IReadOnlyList<NewCheckRunAnnotation> BuildAnnotations(ProductScanResult result)
+        {
+            if (!_snyk.AnnotatePullRequests || result.Product != SnykProduct.Code || result.Failed || result.NotApplicable)
+            {
+                return [];
+            }
+
+            var annotations = new List<NewCheckRunAnnotation>();
+            foreach (var finding in result.Findings)
+            {
+                if (finding.FilePath is not { Length: > 0 } path || finding.StartLine is not int start)
+                {
+                    continue;
+                }
+
+                var end = finding.EndLine is int e && e >= start ? e : start;
+                annotations.Add(new NewCheckRunAnnotation(path, start, end, SeverityToAnnotationLevel(finding.Severity), finding.Title)
+                {
+                    Title = $"Snyk Code: {finding.Severity}",
+                });
+            }
+
+            return annotations;
+        }
+
+        private static CheckAnnotationLevel SeverityToAnnotationLevel(string severity) =>
+            SnykSeverityExtensions.Parse(severity) switch
+            {
+                SnykSeverity.Critical or SnykSeverity.High => CheckAnnotationLevel.Failure,
+                SnykSeverity.Medium => CheckAnnotationLevel.Warning,
+                _ => CheckAnnotationLevel.Notice,
+            };
 
         // Product wording for the Re-scan button description. Uses the scan-type nomenclature (SAST, IaC,
         // Open-source) that matches the check names, which differs from ProductLabel ("Code", "IaC").

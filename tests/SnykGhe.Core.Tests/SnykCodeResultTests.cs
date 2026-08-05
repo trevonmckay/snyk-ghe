@@ -127,5 +127,49 @@ namespace SnykGhe.Core.Tests
             Assert.Empty(SnykCodeResult.Parse("").Findings);
             Assert.True(SnykCodeResult.Parse("not json").Failed);
         }
+
+        [Fact]
+        public void Parse_RetainsRawSarif_ForCodeScanningUpload()
+        {
+            const string json = """{ "version": "2.1.0", "runs": [ { "results": [] } ] }""";
+
+            var result = SnykCodeResult.Parse(json);
+
+            Assert.Equal(json, result.RawSarif);
+        }
+
+        [Fact]
+        public void Parse_ExtractsStructuredLocation_ForAnnotations()
+        {
+            // First result has an explicit endLine; second omits it (endLine must fall back to startLine).
+            const string json = """
+        {
+          "runs": [ { "results": [
+            { "ruleId": "cs/Sqli", "level": "error", "message": { "text": "SQL Injection" },
+              "locations": [ { "physicalLocation": { "artifactLocation": { "uri": "src/Db.cs" }, "region": { "startLine": 42, "endLine": 45 } } } ] },
+            { "ruleId": "cs/Secret", "level": "warning", "message": { "text": "Hardcoded secret" },
+              "locations": [ { "physicalLocation": { "artifactLocation": { "uri": "src/Config.cs" }, "region": { "startLine": 7 } } } ] },
+            { "ruleId": "cs/Global", "level": "note", "message": { "text": "No location" }, "locations": [] }
+          ] } ]
+        }
+        """;
+
+            var result = SnykCodeResult.Parse(json);
+
+            var multiLine = result.Findings[0];
+            Assert.Equal("src/Db.cs", multiLine.FilePath);
+            Assert.Equal(42, multiLine.StartLine);
+            Assert.Equal(45, multiLine.EndLine);
+
+            var singleLine = result.Findings[1];
+            Assert.Equal("src/Config.cs", singleLine.FilePath);
+            Assert.Equal(7, singleLine.StartLine);
+            Assert.Equal(7, singleLine.EndLine);
+
+            var noLocation = result.Findings[2];
+            Assert.Null(noLocation.FilePath);
+            Assert.Null(noLocation.StartLine);
+            Assert.Null(noLocation.EndLine);
+        }
     }
 }
