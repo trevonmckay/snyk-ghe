@@ -33,15 +33,18 @@ namespace SnykGhe.Core.Snyk
 
         private readonly SnykOptions _options;
         private readonly SnykOAuthTokenProvider _oauthTokenProvider;
+        private readonly IHostApplicationLifetime _appLifetime;
         private readonly ILogger<SnykCliRunner> _logger;
 
         public SnykCliRunner(
             IOptions<SnykOptions> options,
             SnykOAuthTokenProvider oauthTokenProvider,
+            IHostApplicationLifetime appLifetime,
             ILogger<SnykCliRunner> logger)
         {
             _options = options.Value;
             _oauthTokenProvider = oauthTokenProvider;
+            _appLifetime = appLifetime;
             _logger = logger;
         }
 
@@ -78,6 +81,18 @@ namespace SnykGhe.Core.Snyk
                     .WithValidation(CommandResultValidation.None)
                     .ExecuteBufferedAsync(timeout.Token);
 
+                // A signal-killed CLI (exit ≥ 128) coinciding with host shutdown means the replica is being
+                // scaled in / recycled mid-scan, not that the scan failed. Surface it as a retryable
+                // interruption so the delivery is redelivered and re-run on a healthy replica, rather than
+                // classifying the signal code (143/137) as a real CLI error that reports "could not complete".
+                if (IsShutdownInterruption(result.ExitCode, _appLifetime.ApplicationStopping.IsCancellationRequested))
+                {
+                    _logger.LogInformation(
+                        "Snyk CLI killed by signal (exit {Code}) during host shutdown in {Dir}; delivery will be redelivered.",
+                        result.ExitCode, workingDirectory);
+                    throw new ScanInterruptedException(result.ExitCode);
+                }
+
                 return new SnykCliOutcome
                 {
                     ExitCode = result.ExitCode,
@@ -91,6 +106,17 @@ namespace SnykGhe.Core.Snyk
                 return new SnykCliOutcome { TimedOut = true };
             }
         }
+
+        /// <summary>
+        /// True when a CLI outcome should be treated as a shutdown interruption rather than a scan failure:
+        /// the process was killed by a signal (POSIX reports 128 + signal, so ≥ 128 — e.g. 143 SIGTERM,
+        /// 137 SIGKILL) and the host is stopping. Requiring the host-stopping condition is what separates a
+        /// scale-in/recycle from an unrelated kill such as an OOM of the child (which is a genuine, non-retryable
+        /// scan failure and must still report rather than redeliver forever). Snyk's own exit codes are 0–3,
+        /// so a code ≥ 128 is unambiguously an external signal.
+        /// </summary>
+        internal static bool IsShutdownInterruption(int exitCode, bool hostStopping) =>
+            hostStopping && exitCode >= 128;
 
         /// <summary>Appends <c>--org</c> when the policy maps this GitHub org to a specific Snyk org.</summary>
         public static void AddOrgArg(List<string> args, ResolvedPolicy policy)

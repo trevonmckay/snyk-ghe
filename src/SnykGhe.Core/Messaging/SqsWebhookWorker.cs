@@ -5,6 +5,7 @@ using SnykGhe.Contracts;
 using SnykGhe.Core.Configuration;
 using SnykGhe.Core.Infrastructure;
 using SnykGhe.Core.Processing;
+using SnykGhe.Core.Snyk;
 
 namespace SnykGhe.Core.Messaging
 {
@@ -94,6 +95,14 @@ namespace SnykGhe.Core.Messaging
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 // Shutting down: leave the message for redelivery after the visibility timeout.
+            }
+            catch (ScanInterruptedException ex)
+            {
+                // A scale-in/recycle killed the scan mid-run. Do not delete: SQS redelivers after the
+                // visibility timeout so a healthy consumer re-runs it. Routine drain, not an error.
+                _logger.LogInformation(
+                    "Draining: scan for delivery {Delivery} interrupted by shutdown ({Reason}); leaving for redelivery.",
+                    LogSanitizer.Clean(deliveryId), ex.Message);
             }
             catch (Exception ex)
             {

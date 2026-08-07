@@ -1,4 +1,5 @@
 using SnykGhe.Core.Infrastructure;
+using SnykGhe.Core.Snyk;
 
 namespace SnykGhe.Core.Processing
 {
@@ -30,6 +31,14 @@ namespace SnykGhe.Core.Processing
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
                     break;
+                }
+                catch (ScanInterruptedException ex)
+                {
+                    // In-process queue has no redelivery: the scan was killed by shutdown and cannot be
+                    // retried here. Log it as an interrupted drain rather than a dispatch failure.
+                    _logger.LogInformation(
+                        "Draining: scan for delivery {Delivery} interrupted by shutdown ({Reason}); not retried (in-process queue).",
+                        LogSanitizer.Clean(message.DeliveryId), ex.Message);
                 }
                 catch (Exception ex)
                 {

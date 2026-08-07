@@ -2,7 +2,9 @@ using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Options;
 using SnykGhe.Contracts;
 using SnykGhe.Core.Configuration;
+using SnykGhe.Core.Infrastructure;
 using SnykGhe.Core.Processing;
+using SnykGhe.Core.Snyk;
 
 namespace SnykGhe.Core.Messaging
 {
@@ -57,12 +59,31 @@ namespace SnykGhe.Core.Messaging
                 DeliveryId = GetProperty(args.Message, GitHubWebhookMessageProperties.DeliveryId),
             };
 
-            // Let exceptions propagate: the processor abandons the message for redelivery / dead-lettering.
-            await _dispatcher.DispatchAsync(message);
+            try
+            {
+                // Let exceptions propagate: the processor abandons the message for redelivery / dead-lettering.
+                await _dispatcher.DispatchAsync(message);
+            }
+            catch (ScanInterruptedException ex)
+            {
+                // Expected during a scale-in/recycle: the scan was killed mid-run. Rethrow so the message is
+                // abandoned and redelivered to a healthy replica, but log it as routine drain, not an error.
+                _logger.LogInformation(
+                    "Draining: scan for delivery {Delivery} interrupted by shutdown ({Reason}); abandoning for redelivery.",
+                    LogSanitizer.Clean(message.DeliveryId), ex.Message);
+                throw;
+            }
         }
 
         private Task OnErrorAsync(ProcessErrorEventArgs args)
         {
+            // A handler that threw ScanInterruptedException is surfaced here as a processing error; it is an
+            // expected drain path (already logged at OnMessageAsync), so do not repeat it as an error.
+            if (args.Exception is ScanInterruptedException)
+            {
+                return Task.CompletedTask;
+            }
+
             _logger.LogError(args.Exception, "Service Bus webhook processor error from {Source}", args.ErrorSource);
             return Task.CompletedTask;
         }
