@@ -30,6 +30,15 @@ namespace SnykGhe.Core.Configuration
         /// </summary>
         public int MaxAutoLockRenewalMinutes { get; set; } = 30;
 
+        /// <summary>
+        /// How many times a scan killed by host shutdown (a scaled-in / recycled replica) is redelivered
+        /// before the worker stops retrying and lets the posted "could not complete" check stand. Compared
+        /// against the delivery count, so with the default of 3 the scan is attempted on deliveries 1–3 and
+        /// given up on the 4th. Keep it below the queue's max delivery count (5) so an interruption that keeps
+        /// recurring settles with a reported check instead of silently dead-lettering, and never loops forever.
+        /// </summary>
+        public int ScanInterruptionRedeliveryLimit { get; set; } = 3;
+
         public bool IsConfigured => !string.IsNullOrWhiteSpace(FullyQualifiedNamespace);
     }
 }

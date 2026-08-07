@@ -81,6 +81,9 @@ param maxReplicas int = 4
 @description('KEDA azure-servicebus target: queued messages per replica. 1 gives one replica per queued message (up to maxReplicas), so with the default per-replica concurrency of 1 the effective concurrent-scan count equals the replica count.')
 param serviceBusMessageCount int = 1
 
+@description('KEDA scale-to-zero cooldown (seconds) for the scan processor: how long a replica stays up after the queue last had active messages before scaling to zero. A message being scanned is lock-hidden and does not count as active, so a replica running a scan becomes a scale-in candidate once this elapses; set it above a typical scan so routine scale-in does not interrupt scans mid-run. Interruptions that still happen are redelivered (bounded by ServiceBus:ScanInterruptionRedeliveryLimit), so this trades a little idle warm-replica cost for fewer interruptions rather than being a correctness requirement. Default 600 raises the 300s platform default to cover a typical single scan; lower it toward 300 to favor scale-to-zero economy.')
+param scanProcessorCooldownSeconds int = 600
+
 @description('Seconds a replica may take to drain an in-flight scan after SIGTERM (scale-in or a new revision) before the platform sends SIGKILL. Must exceed the host shutdown timeout so the in-process drain finishes first.')
 param terminationGracePeriodSeconds int = 300
 
@@ -625,6 +628,9 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
         // (ServiceBus:MaxConcurrentCalls defaults to 1), so maxReplicas is the concurrent-scan ceiling.
         minReplicas: 0
         maxReplicas: maxReplicas
+        // Hold a replica up this long after the queue drains so a scan (which lock-hides its message, making
+        // the queue read as empty) is less likely to be scaled in mid-run. See scanProcessorCooldownSeconds.
+        cooldownPeriod: scanProcessorCooldownSeconds
         rules: [
           {
             name: 'servicebus-queue'

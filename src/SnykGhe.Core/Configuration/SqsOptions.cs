@@ -31,6 +31,15 @@ namespace SnykGhe.Core.Configuration
         /// </summary>
         public int VisibilityTimeoutSeconds { get; set; } = 1800;
 
+        /// <summary>
+        /// How many times a scan killed by host shutdown (a scaled-in / recycled instance) is redelivered
+        /// before the worker deletes the message and lets the posted "could not complete" check stand.
+        /// Compared against the SQS receive count, so with the default of 3 the scan is attempted on receives
+        /// 1–3 and given up on the 4th. Keep it below the queue's redrive maxReceiveCount so a recurring
+        /// interruption settles with a reported check instead of dead-lettering, and never loops forever.
+        /// </summary>
+        public int ScanInterruptionRedeliveryLimit { get; set; } = 3;
+
         public bool IsConfigured => !string.IsNullOrWhiteSpace(QueueUrl);
     }
 }

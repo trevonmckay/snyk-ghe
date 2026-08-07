@@ -64,14 +64,25 @@ namespace SnykGhe.Core.Messaging
                 // Let exceptions propagate: the processor abandons the message for redelivery / dead-lettering.
                 await _dispatcher.DispatchAsync(message);
             }
-            catch (ScanInterruptedException ex)
+            catch (ScanInterruptedException) when (
+                ScanRedeliveryPolicy.ShouldRedeliver(args.Message.DeliveryCount, _options.ScanInterruptionRedeliveryLimit))
             {
-                // Expected during a scale-in/recycle: the scan was killed mid-run. Rethrow so the message is
-                // abandoned and redelivered to a healthy replica, but log it as routine drain, not an error.
+                // Expected during a scale-in/recycle: the scan was killed mid-run and still has retry budget.
+                // Rethrow so the message is abandoned and redelivered to a healthy replica, but log it as
+                // routine drain, not an error.
                 _logger.LogInformation(
-                    "Draining: scan for delivery {Delivery} interrupted by shutdown ({Reason}); abandoning for redelivery.",
-                    LogSanitizer.Clean(message.DeliveryId), ex.Message);
+                    "Draining: scan for delivery {Delivery} interrupted by shutdown (delivery {Count}); abandoning for redelivery.",
+                    LogSanitizer.Clean(message.DeliveryId), args.Message.DeliveryCount);
                 throw;
+            }
+            catch (ScanInterruptedException)
+            {
+                // Retry budget spent: a scan that keeps getting scaled in (longer than the cooldown window)
+                // would loop to the dead-letter queue. Stop here and let auto-complete settle the message so
+                // the "could not complete" check already posted is the terminal state, not a silent dead-letter.
+                _logger.LogWarning(
+                    "Scan for delivery {Delivery} interrupted by shutdown {Count} times (limit {Limit}); giving up, reported could-not-complete.",
+                    LogSanitizer.Clean(message.DeliveryId), args.Message.DeliveryCount, _options.ScanInterruptionRedeliveryLimit);
             }
         }
 
