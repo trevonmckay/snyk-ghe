@@ -28,5 +28,8 @@ namespace SnykGhe.Core.Storage
 
         /// <summary>Repo-level Snyk exclude names, stored newline-delimited (see <see cref="Configuration.ExcludeList"/>).</summary>
         public string? ExcludeDirs { get; set; }
+
+        /// <summary>Repo-level base-branch scan patterns, stored newline-delimited (see <see cref="Configuration.BranchFilter"/>).</summary>
+        public string? ScanTargetBranches { get; set; }
     }
 }

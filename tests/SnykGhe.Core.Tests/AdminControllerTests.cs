@@ -21,6 +21,7 @@ namespace SnykGhe.Core.Tests
 
             public OrgPolicyOverlay? WrittenOverlay { get; private set; }
             public IReadOnlyList<string>? WrittenRepoExcludes { get; private set; }
+            public IReadOnlyList<string>? WrittenRepoBranches { get; private set; }
             public bool RepoRemoved { get; private set; }
 
             public Task<GitHubInstallationRecord?> FindAsync(string gitHubOrg, CancellationToken cancellationToken) =>
@@ -35,9 +36,10 @@ namespace SnykGhe.Core.Tests
                 return Task.CompletedTask;
             }
 
-            public Task SetRepoConfigAsync(string gitHubOrg, string repo, IReadOnlyList<string> excludeDirs, CancellationToken cancellationToken)
+            public Task SetRepoConfigAsync(string gitHubOrg, string repo, IReadOnlyList<string> excludeDirs, IReadOnlyList<string> scanTargetBranches, CancellationToken cancellationToken)
             {
                 WrittenRepoExcludes = excludeDirs;
+                WrittenRepoBranches = scanTargetBranches;
                 return Task.CompletedTask;
             }
 
@@ -196,6 +198,83 @@ namespace SnykGhe.Core.Tests
 
             Assert.IsType<BadRequestObjectResult>(result);
             Assert.Null(registry.WrittenRepoExcludes);
+        }
+
+        [Fact]
+        public async Task PutOrg_SetsScanTargetBranches_AbsentClearsToEmpty()
+        {
+            var registry = new CapturingRegistry
+            {
+                OrgRecord = new GitHubInstallationRecord { GitHubOrg = "acme", ScanTargetBranches = ["old"] },
+            };
+
+            var result = await Build(registry).PutOrg("acme",
+                new OrgPolicyPutRequest { ScanTargetBranches = ["$default", "main", "release/*"] }, CancellationToken.None);
+
+            Assert.IsType<OkObjectResult>(result);
+            Assert.Equal(["$default", "main", "release/*"], registry.WrittenOverlay!.ScanTargetBranches);
+
+            // A PUT with the field absent resets it (full-replace semantics).
+            await Build(registry).PutOrg("acme", new OrgPolicyPutRequest { SnykOrgId = "snyk-1" }, CancellationToken.None);
+            Assert.Empty(registry.WrittenOverlay!.ScanTargetBranches);
+        }
+
+        [Fact]
+        public async Task PutOrg_OverlongBranchPattern_BadRequest_NoWrite()
+        {
+            var registry = new CapturingRegistry();
+
+            var result = await Build(registry).PutOrg("acme",
+                new OrgPolicyPutRequest { ScanTargetBranches = [new string('x', 256)] }, CancellationToken.None);
+
+            Assert.IsType<BadRequestObjectResult>(result);
+            Assert.Null(registry.WrittenOverlay);
+        }
+
+        [Fact]
+        public async Task PatchOrg_ScanTargetBranchesAbsent_Preserved_Specified_Replaces()
+        {
+            var registry = new CapturingRegistry
+            {
+                OrgRecord = new GitHubInstallationRecord { GitHubOrg = "acme", ScanTargetBranches = ["main"] },
+            };
+
+            // Absent → unchanged.
+            await Build(registry).PatchOrg("acme", new OrgPolicyPatchRequest(), CancellationToken.None);
+            Assert.Equal(["main"], registry.WrittenOverlay!.ScanTargetBranches);
+
+            // Specified → replaced (and de-duplicated).
+            var body = new OrgPolicyPatchRequest { ScanTargetBranches = new Optional<List<string>?>(["release/*", "release/*"]) };
+            await Build(registry).PatchOrg("acme", body, CancellationToken.None);
+            Assert.Equal(["release/*"], registry.WrittenOverlay!.ScanTargetBranches);
+        }
+
+        [Fact]
+        public async Task PutRepo_WritesBothExcludesAndScanTargetBranches()
+        {
+            var registry = new CapturingRegistry();
+
+            var result = await Build(registry).PutRepo("acme", "atlas",
+                new RepoConfigPutRequest { ExcludeDirs = ["obj"], ScanTargetBranches = ["*"] }, CancellationToken.None);
+
+            Assert.IsType<OkObjectResult>(result);
+            Assert.Equal(["obj"], registry.WrittenRepoExcludes);
+            Assert.Equal(["*"], registry.WrittenRepoBranches);
+        }
+
+        [Fact]
+        public async Task PatchRepo_ScanTargetBranchesSpecified_ReplacesAndPreservesExcludes()
+        {
+            var registry = new CapturingRegistry
+            {
+                RepoConfig = new RepoScanConfig { Repo = "atlas", ExcludeDirs = ["obj"], ScanTargetBranches = ["main"] },
+            };
+
+            var body = new RepoConfigPatchRequest { ScanTargetBranches = new Optional<List<string>?>(["release/*"]) };
+            await Build(registry).PatchRepo("acme", "atlas", body, CancellationToken.None);
+
+            Assert.Equal(["obj"], registry.WrittenRepoExcludes);         // absent → unchanged
+            Assert.Equal(["release/*"], registry.WrittenRepoBranches);   // specified → replaced
         }
 
         [Fact]

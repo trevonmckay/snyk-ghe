@@ -86,6 +86,8 @@ namespace SnykGhe.Core.Webhooks
                 (int)pullRequestEvent.Number,
                 pullRequestEvent.PullRequest.Head.Ref,
                 pullRequestEvent.PullRequest.Head.Sha,
+                pullRequestEvent.PullRequest.Base.Ref,
+                pullRequestEvent.Repository.DefaultBranch,
                 cancellationToken);
         }
 
@@ -133,6 +135,8 @@ namespace SnykGhe.Core.Webhooks
                 (int)pullRequest.Number,
                 pullRequest.Head.Ref,
                 checkRunEvent.CheckRun.HeadSha,
+                pullRequest.Base.Ref,
+                checkRunEvent.Repository.DefaultBranch,
                 cancellationToken);
         }
 
@@ -144,6 +148,8 @@ namespace SnykGhe.Core.Webhooks
             int prNumber,
             string headRef,
             string headSha,
+            string? baseRef,
+            string? defaultBranch,
             CancellationToken cancellationToken)
         {
             var request = new ScanRequest
@@ -155,6 +161,8 @@ namespace SnykGhe.Core.Webhooks
                 PrNumber = prNumber,
                 HeadRef = headRef,
                 HeadSha = headSha,
+                BaseRef = baseRef,
+                DefaultBranch = defaultBranch,
             };
 
             _logger.LogInformation("Scanning {Owner}/{Repo} PR #{Pr}", request.Owner, request.Repo, request.PrNumber);

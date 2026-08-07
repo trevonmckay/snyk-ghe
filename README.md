@@ -88,6 +88,9 @@ No organization or account permissions are required.
 
 - **Pull request** — triggers the scan on the `opened`, `synchronize`, `reopened`, and `ready_for_review`
   actions. Draft PRs are not scanned; a PR opened as a draft is first scanned when it is marked ready for review.
+  By default every PR is scanned regardless of its target branch; you can restrict scans to PRs targeting
+  certain base branches (e.g. the default branch, `main`, and `release/*`) — see
+  [Restricting scans by target branch](#restricting-scans-by-target-branch).
 - **Check run** — re-runs the scan when a user clicks **Re-run** on the Snyk check (the `rerequested`
   action). GitHub delivers this only to the App that owns the check run, so it always targets our own check.
 - **Delete** — when a branch is deleted (typically the automatic deletion after a PR merges), removes the
@@ -150,6 +153,7 @@ All keys bind from `appsettings.json` / environment variables (double-underscore
 | `Snyk:Token` *or* `Snyk:OAuthClientId`/`Secret` | Snyk CLI authentication (static service-account token, or OAuth client-credentials — the service exchanges those for a short-lived token via `Snyk:OAuthTokenUrl`, default US `https://api.snyk.io/oauth2/token`; override for EU/AU) |
 | `Snyk:DefaultSnykOrgId` / `DefaultSeverityThreshold` / `DefaultEcosystem` | Fallback policy for unmapped orgs |
 | `Snyk:DefaultExcludeDirs` | Directory/file **names** passed to `snyk --exclude` for every org, before per-org and per-repo additions layer on (see [Excluding directories from scans](#excluding-directories-from-scans)). Names only — a path-like entry is dropped |
+| `Snyk:ScanTargetBranches` | Glob patterns matched against a PR's **base (target) branch** to decide whether it is scanned — the global default, overridable per-org and per-repo (see [Restricting scans by target branch](#restricting-scans-by-target-branch)). Empty (default) scans every PR. Supports `*`/`?` wildcards and the `$default` token (the repo's default branch), e.g. `["$default","main","release/*"]` |
 | `Snyk:Monitor` | When `true`, also run `snyk monitor` after a PR's gating test so the Check Run's "View more details on Snyk" link points at the scan snapshot in the Snyk Web UI. Off by default — it creates a short-lived Snyk project per PR (the PR head branch is the target reference). Also drives `--report` publishing for the Code and IaC scans. Does not affect the default-branch baseline (`Snyk:ScanDefaultBranch`) |
 | `Snyk:MonitorTimeoutSeconds` | Timeout for a single `snyk monitor` invocation (default `900`, i.e. 15 min). Monitoring uploads a dependency snapshot and can outrun a test scan on large repos, so it has its own bound separate from `Snyk:ScanTimeoutSeconds`; on timeout the monitor is skipped and the Check Run simply has no Snyk link |
 | `Snyk:ScanDefaultBranch` | When `true` (default), a push to a repo's default branch runs a baseline scan and `snyk monitor`s it under the default-branch target reference — the durable snapshot Snyk alerts against as new vulnerabilities are disclosed. Set `false` to disable the push-triggered baseline |
@@ -259,6 +263,40 @@ curl -X PUT https://<host>/api/admin/orgs/my-github-org/repos/my-repo \
 curl https://<host>/api/admin/orgs/my-github-org/repos/my-repo -H "X-Admin-Key: <admin-key>"
 curl -X DELETE https://<host>/api/admin/orgs/my-github-org/repos/my-repo -H "X-Admin-Key: <admin-key>"
 ```
+
+#### Restricting scans by target branch
+
+By default every pull request is scanned. To scan only PRs whose **base (target) branch** — the branch
+the PR merges into, e.g. `main` for a `feature → main` PR — matches a policy, set a list of glob
+patterns. The patterns support `*`/`?` wildcards (so `release/*` matches `release/2.0`) and one special
+token, `$default`, which matches the repository's default branch (not always `main`). Matching is
+case-insensitive; use `*` to match every branch explicitly.
+
+Unlike excludes, the layers **override** rather than union: the most specific layer that sets any pattern
+wins outright — the repo list, else the org list, else the global `Snyk:ScanTargetBranches`. This lets a
+repo *narrow* its org's policy, or *widen* it back to everything with `["*"]`. When no layer sets a
+pattern (the default), every PR is scanned, so the filter is entirely opt-in.
+
+```bash
+# Global default (appsettings / env): scan only PRs targeting the default branch, main, or a release branch
+#   Snyk__ScanTargetBranches__0=$default
+#   Snyk__ScanTargetBranches__1=main
+#   Snyk__ScanTargetBranches__2=release/*
+
+# Per-org override (PATCH leaves snykOrgId / gate / ecosystem / excludes untouched)
+curl -X PATCH https://<host>/api/admin/orgs/my-github-org \
+  -H "X-Admin-Key: <admin-key>" -H "Content-Type: application/json" \
+  -d '{"scanTargetBranches":["$default","main","release/*"]}'
+
+# Per-repo override — scan every PR in this repo, even under a restrictive org policy
+curl -X PUT https://<host>/api/admin/orgs/my-github-org/repos/my-repo \
+  -H "X-Admin-Key: <admin-key>" -H "Content-Type: application/json" \
+  -d '{"scanTargetBranches":["*"]}'
+```
+
+> A filtered-out PR is simply not scanned — no Check Run is posted, exactly as for a draft PR. If you make
+> the Snyk check a **required status check**, ensure the filter includes every protected branch, or PRs
+> targeting a non-scanned branch will have no check to satisfy and cannot merge.
 
 Manually trigger a baseline scan (the same scan a push to the default branch runs). Scans the
 default branch unless the request body overrides the branch; returns **202** once queued and runs in

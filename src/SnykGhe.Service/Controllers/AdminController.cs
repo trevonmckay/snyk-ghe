@@ -22,6 +22,7 @@ namespace SnykGhe.Service.Controllers
         public string? Ecosystem { get; init; }
         public bool? Suspended { get; init; }
         public List<string>? ExcludeDirs { get; init; }
+        public List<string>? ScanTargetBranches { get; init; }
     }
 
     /// <summary>
@@ -36,20 +37,23 @@ namespace SnykGhe.Service.Controllers
         public Optional<string?> Ecosystem { get; init; }
         public Optional<bool> Suspended { get; init; }
         public Optional<List<string>?> ExcludeDirs { get; init; }
+        public Optional<List<string>?> ScanTargetBranches { get; init; }
     }
 
-    /// <summary>Full replacement of a repo's scan overrides. An absent or empty exclude list clears it.</summary>
+    /// <summary>Full replacement of a repo's scan overrides. An absent or empty list clears that override.</summary>
     [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public sealed record RepoConfigPutRequest
     {
         public List<string>? ExcludeDirs { get; init; }
+        public List<string>? ScanTargetBranches { get; init; }
     }
 
-    /// <summary>Partial update of a repo's scan overrides. An absent exclude list is left unchanged.</summary>
+    /// <summary>Partial update of a repo's scan overrides. An absent list is left unchanged.</summary>
     [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public sealed record RepoConfigPatchRequest
     {
         public Optional<List<string>?> ExcludeDirs { get; init; }
+        public Optional<List<string>?> ScanTargetBranches { get; init; }
     }
 
     /// <summary>
@@ -99,6 +103,11 @@ namespace SnykGhe.Service.Controllers
                 return BadRequest(error);
             }
 
+            if (!TrySanitizeBranchPatterns(body.ScanTargetBranches, out var scanTargetBranches, out error))
+            {
+                return BadRequest(error);
+            }
+
             var overlay = new OrgPolicyOverlay
             {
                 SnykOrgId = Clean(body.SnykOrgId),
@@ -106,6 +115,7 @@ namespace SnykGhe.Service.Controllers
                 Ecosystem = Clean(body.Ecosystem),
                 Suspended = body.Suspended ?? false,
                 ExcludeDirs = excludeDirs,
+                ScanTargetBranches = scanTargetBranches,
             };
 
             await _registry.SetOrgPolicyAsync(org, overlay, cancellationToken);
@@ -134,6 +144,7 @@ namespace SnykGhe.Service.Controllers
                 Ecosystem = record.Ecosystem,
                 Suspended = record.Suspended,
                 ExcludeDirs = record.ExcludeDirs,
+                ScanTargetBranches = record.ScanTargetBranches,
             };
 
             if (body.SnykOrgId.IsSpecified)
@@ -166,6 +177,16 @@ namespace SnykGhe.Service.Controllers
                 overlay.ExcludeDirs = excludeDirs;
             }
 
+            if (body.ScanTargetBranches.IsSpecified)
+            {
+                if (!TrySanitizeBranchPatterns(body.ScanTargetBranches.Value, out var scanTargetBranches, out var error))
+                {
+                    return BadRequest(error);
+                }
+
+                overlay.ScanTargetBranches = scanTargetBranches;
+            }
+
             await _registry.SetOrgPolicyAsync(org, overlay, cancellationToken);
             _logger.LogInformation("Updated Snyk policy for org {Org}", LogSanitizer.Clean(org));
             return Ok(OrgView(org, overlay));
@@ -180,7 +201,9 @@ namespace SnykGhe.Service.Controllers
             }
 
             var config = await _registry.FindRepoConfigAsync(org, repo, cancellationToken);
-            return config is null ? NotFound() : Ok(RepoView(config.GitHubOrg, config.Repo, config.ExcludeDirs));
+            return config is null
+                ? NotFound()
+                : Ok(RepoView(config.GitHubOrg, config.Repo, config.ExcludeDirs, config.ScanTargetBranches));
         }
 
         [HttpPut("{org}/repos/{repo}")]
@@ -196,9 +219,14 @@ namespace SnykGhe.Service.Controllers
                 return BadRequest(error);
             }
 
-            await _registry.SetRepoConfigAsync(org, repo, excludeDirs, cancellationToken);
+            if (!TrySanitizeBranchPatterns(body.ScanTargetBranches, out var scanTargetBranches, out error))
+            {
+                return BadRequest(error);
+            }
+
+            await _registry.SetRepoConfigAsync(org, repo, excludeDirs, scanTargetBranches, cancellationToken);
             _logger.LogInformation("Replaced scan config for {Org}/{Repo}", LogSanitizer.Clean(org), LogSanitizer.Clean(repo));
-            return Ok(RepoView(org, repo, excludeDirs));
+            return Ok(RepoView(org, repo, excludeDirs, scanTargetBranches));
         }
 
         [HttpPatch("{org}/repos/{repo}")]
@@ -226,9 +254,20 @@ namespace SnykGhe.Service.Controllers
                 excludeDirs = sanitized;
             }
 
-            await _registry.SetRepoConfigAsync(org, repo, excludeDirs, cancellationToken);
+            var scanTargetBranches = config.ScanTargetBranches;
+            if (body.ScanTargetBranches.IsSpecified)
+            {
+                if (!TrySanitizeBranchPatterns(body.ScanTargetBranches.Value, out var sanitized, out var error))
+                {
+                    return BadRequest(error);
+                }
+
+                scanTargetBranches = sanitized;
+            }
+
+            await _registry.SetRepoConfigAsync(org, repo, excludeDirs, scanTargetBranches, cancellationToken);
             _logger.LogInformation("Updated scan config for {Org}/{Repo}", LogSanitizer.Clean(org), LogSanitizer.Clean(repo));
-            return Ok(RepoView(org, repo, excludeDirs));
+            return Ok(RepoView(org, repo, excludeDirs, scanTargetBranches));
         }
 
         [HttpDelete("{org}/repos/{repo}")]
@@ -269,6 +308,33 @@ namespace SnykGhe.Service.Controllers
             return true;
         }
 
+        /// <summary>
+        /// Validates base-branch scan patterns (400 on failure) and returns the sanitized list. A git ref name
+        /// cannot exceed 255 bytes, so a longer pattern is a mistake and could never match a real branch.
+        /// </summary>
+        private static bool TrySanitizeBranchPatterns(IReadOnlyList<string>? raw, out IReadOnlyList<string> sanitized, out string? error)
+        {
+            const int MaxPatternLength = 255;
+
+            if (raw is not null)
+            {
+                var offending = raw
+                    .Where(p => !string.IsNullOrWhiteSpace(p) && p.Trim().Length > MaxPatternLength)
+                    .ToList();
+
+                if (offending.Count > 0)
+                {
+                    sanitized = [];
+                    error = $"scanTargetBranches patterns must be at most {MaxPatternLength} characters.";
+                    return false;
+                }
+            }
+
+            sanitized = BranchFilter.Sanitize(raw);
+            error = null;
+            return true;
+        }
+
         private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
         private static object OrgView(GitHubInstallationRecord record) => new
@@ -280,6 +346,7 @@ namespace SnykGhe.Service.Controllers
             record.Ecosystem,
             record.Suspended,
             record.ExcludeDirs,
+            record.ScanTargetBranches,
         };
 
         private static object OrgView(string org, OrgPolicyOverlay overlay) => new
@@ -290,13 +357,15 @@ namespace SnykGhe.Service.Controllers
             overlay.Ecosystem,
             overlay.Suspended,
             overlay.ExcludeDirs,
+            overlay.ScanTargetBranches,
         };
 
-        private static object RepoView(string org, string repo, IReadOnlyList<string> excludeDirs) => new
+        private static object RepoView(string org, string repo, IReadOnlyList<string> excludeDirs, IReadOnlyList<string> scanTargetBranches) => new
         {
             GitHubOrg = org,
             Repo = repo,
             ExcludeDirs = excludeDirs,
+            ScanTargetBranches = scanTargetBranches,
         };
 
         private bool IsAuthorized() =>

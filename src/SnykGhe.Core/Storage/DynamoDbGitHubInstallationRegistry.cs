@@ -122,6 +122,7 @@ namespace SnykGhe.Core.Storage
             Apply("#sev", "SeverityThreshold", overlay.SeverityThreshold);
             Apply("#eco", "Ecosystem", overlay.Ecosystem);
             Apply("#exc", "ExcludeDirs", ExcludeList.Join(overlay.ExcludeDirs));
+            Apply("#stb", "ScanTargetBranches", BranchFilter.Join(overlay.ScanTargetBranches));
 
             var expression = "SET " + string.Join(", ", sets);
             if (removes.Count > 0)
@@ -181,12 +182,18 @@ namespace SnykGhe.Core.Storage
                 GitHubOrg = GetString(item, "GitHubOrg") ?? gitHubOrg,
                 Repo = GetString(item, "Repo") ?? repo,
                 ExcludeDirs = ExcludeList.Split(GetString(item, "ExcludeDirs")),
+                ScanTargetBranches = BranchFilter.Split(GetString(item, "ScanTargetBranches")),
             };
         }
 
-        public async Task SetRepoConfigAsync(string gitHubOrg, string repo, IReadOnlyList<string> excludeDirs, CancellationToken cancellationToken)
+        public async Task SetRepoConfigAsync(
+            string gitHubOrg,
+            string repo,
+            IReadOnlyList<string> excludeDirs,
+            IReadOnlyList<string> scanTargetBranches,
+            CancellationToken cancellationToken)
         {
-            // PutItem replaces the whole item, so an empty exclude list simply omits the attribute (clears it).
+            // PutItem replaces the whole item, so an empty list simply omits the attribute (clears it).
             var item = new Dictionary<string, AttributeValue>
             {
                 [KeyAttribute] = RepoKey(gitHubOrg, repo)[KeyAttribute],
@@ -194,10 +201,16 @@ namespace SnykGhe.Core.Storage
                 ["Repo"] = new(repo),
             };
 
-            var joined = ExcludeList.Join(excludeDirs);
-            if (!string.IsNullOrEmpty(joined))
+            var joinedExcludes = ExcludeList.Join(excludeDirs);
+            if (!string.IsNullOrEmpty(joinedExcludes))
             {
-                item["ExcludeDirs"] = new(joined);
+                item["ExcludeDirs"] = new(joinedExcludes);
+            }
+
+            var joinedBranches = BranchFilter.Join(scanTargetBranches);
+            if (!string.IsNullOrEmpty(joinedBranches))
+            {
+                item["ScanTargetBranches"] = new(joinedBranches);
             }
 
             await _client.PutItemAsync(_options.TableName, item, cancellationToken);
@@ -227,6 +240,7 @@ namespace SnykGhe.Core.Storage
                 Ecosystem = GetString(item, "Ecosystem"),
                 Suspended = item.TryGetValue("Suspended", out var s) && s.IsBOOLSet && s.BOOL == true,
                 ExcludeDirs = ExcludeList.Split(GetString(item, "ExcludeDirs")),
+                ScanTargetBranches = BranchFilter.Split(GetString(item, "ScanTargetBranches")),
             };
         }
 

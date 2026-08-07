@@ -25,5 +25,12 @@
 
         /// <summary>Org-level Snyk <c>--exclude</c> directory/file names, applied to every repo in the org.</summary>
         public IReadOnlyList<string> ExcludeDirs { get; set; } = [];
+
+        /// <summary>
+        /// Org-level base-branch scan patterns. When non-empty, overrides the global default for every repo in
+        /// the org (a repo-level list overrides this in turn). Empty means "inherit". See
+        /// <see cref="Configuration.BranchFilter"/>.
+        /// </summary>
+        public IReadOnlyList<string> ScanTargetBranches { get; set; } = [];
     }
 }

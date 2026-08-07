@@ -68,6 +68,14 @@ namespace SnykGhe.Core.Processing
                 return;
             }
 
+            if (!policy.ShouldScanTargetBranch(request.BaseRef, request.DefaultBranch))
+            {
+                _logger.LogInformation(
+                    "PR #{Pr} in {Owner}/{Repo} targets {BaseRef}, which is not in the scan-target branch policy; skipping scan.",
+                    request.PrNumber, request.Owner, request.Repo, request.BaseRef);
+                return;
+            }
+
             _logger.LogInformation("Scanning {Owner}/{Repo} PR #{Pr} ({Sha}); Snyk org {SnykOrg}, gate {Gate}",
                 request.Owner, request.Repo, request.PrNumber, request.HeadSha, policy.SnykOrgId ?? "(default)", policy.SeverityThreshold);
 
