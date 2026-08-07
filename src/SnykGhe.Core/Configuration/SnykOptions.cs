@@ -138,5 +138,21 @@ namespace SnykGhe.Core.Configuration
         /// with no infrastructure-as-code files skips the check rather than posting an empty one.
         /// </summary>
         public bool ScanIac { get; set; } = false;
+
+        /// <summary>
+        /// When true, attach Snyk Code findings as Check Run annotations so each surfaces inline on the PR's
+        /// "Files changed" tab (file, line, message). No extra permission or entitlement is required — it rides
+        /// on the Check Run the app already posts. On by default; a no-op when <see cref="ScanCode"/> is false.
+        /// </summary>
+        public bool AnnotatePullRequests { get; set; } = true;
+
+        /// <summary>
+        /// When true, best-effort upload the Snyk Code SARIF to GitHub code scanning so findings appear in the
+        /// Security tab with GitHub-rendered source snippets (GitHub supplies the source the Snyk Web UI lacks
+        /// for CLI-origin scans). Requires the repo to have code scanning / GitHub Advanced Security enabled and
+        /// the App's <c>security_events: write</c> permission; when either is absent the upload is skipped
+        /// silently. On by default; a no-op when <see cref="ScanCode"/> is false.
+        /// </summary>
+        public bool UploadSarifToCodeScanning { get; set; } = true;
     }
 }

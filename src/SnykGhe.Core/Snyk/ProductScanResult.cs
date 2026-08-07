@@ -19,6 +19,15 @@ namespace SnykGhe.Core.Snyk
         /// <summary>Where the finding lives: "package@version" (Open Source) or "file:line" (Code / IaC).</summary>
         public string? Location { get; init; }
 
+        /// <summary>Repo-relative source path (Code only); null for Open Source. Drives Check Run annotations.</summary>
+        public string? FilePath { get; init; }
+
+        /// <summary>First line of the finding's region (Code only); pairs with <see cref="FilePath"/> for annotations.</summary>
+        public int? StartLine { get; init; }
+
+        /// <summary>Last line of the finding's region (Code only); equals <see cref="StartLine"/> for a single-line region.</summary>
+        public int? EndLine { get; init; }
+
         /// <summary>Open Source issue type — "vuln" or "license" — used to split the summary table; null otherwise.</summary>
         public string? IssueType { get; init; }
 
@@ -46,6 +55,13 @@ namespace SnykGhe.Core.Snyk
         /// <summary>Snyk Web UI link for this product's published scan, when monitoring/reporting is enabled.</summary>
         public string? DetailsUrl { get; init; }
 
+        /// <summary>
+        /// Raw SARIF 2.1.0 payload from <c>snyk code test --json</c> (Code only; null otherwise). Retained
+        /// verbatim so it can be uploaded to GitHub code scanning — kept unfiltered because GitHub honors the
+        /// SARIF <c>suppressions</c> field, unlike the gate counts which drop accepted ignores.
+        /// </summary>
+        public string? RawSarif { get; init; }
+
         public int CountBySeverity(SnykSeverity severity) =>
             Findings.Count(f => SnykSeverityExtensions.Parse(f.Severity) == severity);
 
@@ -63,6 +79,7 @@ namespace SnykGhe.Core.Snyk
                 NotApplicable = NotApplicable,
                 FailureMessage = FailureMessage,
                 DetailsUrl = detailsUrl,
+                RawSarif = RawSarif,
             };
 
         public static ProductScanResult Skip(SnykProduct product) =>

@@ -74,11 +74,15 @@ App ID and a generated private key (`.pem`) from this page become `GitHub:AppId`
 | **Checks** | Read and write | Publish the PR status Check Run that can gate merges |
 | **Contents** | Read and write | Clone the repository to scan (read); create the fix branch and commit manifest changes (write) |
 | **Pull requests** | Read and write | Post the summary comment and open automated fix PRs; also the minimum access required to subscribe to the *Pull request* event |
+| **Code scanning alerts** | Read and write | Best-effort upload of the Snyk Code SARIF to GitHub code scanning (`security_events`), so findings appear in the Security tab with source snippets. Optional — when the repo lacks code scanning / GitHub Advanced Security the upload is skipped |
 
 No organization or account permissions are required.
 
 > If you run with `Snyk:OpenFixPullRequests=false` (status checks and comments only, no fix PRs),
 > **Contents** can be reduced to **Read-only** — clone-to-scan only needs read access.
+
+> **Code scanning alerts** is only used when `Snyk:UploadSarifToCodeScanning` is on (the default) and
+> `Snyk:ScanCode=true`. Set `Snyk:UploadSarifToCodeScanning=false` to drop the permission entirely.
 
 ### Subscribe to events
 

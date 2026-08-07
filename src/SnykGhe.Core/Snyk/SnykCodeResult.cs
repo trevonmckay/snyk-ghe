@@ -38,17 +38,22 @@ namespace SnykGhe.Core.Snyk
                                 continue;
                             }
 
+                            var (filePath, startLine, endLine) = ResultLocation(result);
                             findings.Add(new SnykFinding
                             {
                                 Severity = LevelToSeverity(GetString(result, "level")),
                                 Title = ResultTitle(result),
-                                Location = ResultLocation(result),
+                                Location = DisplayLocation(filePath, startLine),
+                                FilePath = filePath,
+                                StartLine = startLine,
+                                EndLine = endLine,
                             });
                         }
                     }
                 }
 
-                return new ProductScanResult { Product = SnykProduct.Code, Findings = findings };
+                // Retain the raw SARIF so it can be uploaded to GitHub code scanning verbatim.
+                return new ProductScanResult { Product = SnykProduct.Code, Findings = findings, RawSarif = json };
             }
             catch (JsonException ex)
             {
@@ -67,11 +72,15 @@ namespace SnykGhe.Core.Snyk
             return GetString(result, "ruleId") is { Length: > 0 } ruleId ? ruleId : "Code issue";
         }
 
-        private static string? ResultLocation(JsonElement result)
+        /// <summary>
+        /// Extracts the first physical location's repo-relative path and line region from a SARIF result.
+        /// Returns nulls when the result carries no usable location (e.g. a project-wide finding).
+        /// </summary>
+        private static (string? FilePath, int? StartLine, int? EndLine) ResultLocation(JsonElement result)
         {
             if (!result.TryGetProperty("locations", out var locations) || locations.ValueKind != JsonValueKind.Array)
             {
-                return null;
+                return (null, null, null);
             }
 
             foreach (var location in locations.EnumerateArray())
@@ -89,17 +98,29 @@ namespace SnykGhe.Core.Snyk
                     continue;
                 }
 
-                if (physical.TryGetProperty("region", out var region)
-                    && region.TryGetProperty("startLine", out var line) && line.ValueKind == JsonValueKind.Number)
+                int? startLine = null;
+                int? endLine = null;
+                if (physical.TryGetProperty("region", out var region))
                 {
-                    return $"{uri}:{line.GetInt32()}";
+                    startLine = GetInt(region, "startLine");
+                    // SARIF omits endLine for a single-line region; fall back to startLine so an annotation
+                    // always has a valid endLine >= startLine.
+                    endLine = GetInt(region, "endLine") ?? startLine;
                 }
 
-                return uri;
+                return (uri, startLine, endLine);
             }
 
-            return null;
+            return (null, null, null);
         }
+
+        /// <summary>Human-readable "file:line" (or just "file") for the summary table; null when there is no path.</summary>
+        private static string? DisplayLocation(string? filePath, int? startLine) => filePath switch
+        {
+            null => null,
+            _ when startLine is int line => $"{filePath}:{line}",
+            _ => filePath,
+        };
 
         /// <summary>
         /// True when a SARIF result carries a suppression that is in effect. Snyk Code emits ignores
@@ -131,6 +152,12 @@ namespace SnykGhe.Core.Snyk
         private static string? GetString(JsonElement element, string property) =>
             element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String
                 ? value.GetString()
+                : null;
+
+        private static int? GetInt(JsonElement element, string property) =>
+            element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Number
+                && value.TryGetInt32(out var i)
+                ? i
                 : null;
 
         private static string LevelToSeverity(string? level) => level?.ToLowerInvariant() switch
