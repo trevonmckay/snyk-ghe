@@ -2,7 +2,9 @@ using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Options;
 using SnykGhe.Contracts;
 using SnykGhe.Core.Configuration;
+using SnykGhe.Core.Infrastructure;
 using SnykGhe.Core.Processing;
+using SnykGhe.Core.Snyk;
 
 namespace SnykGhe.Core.Messaging
 {
@@ -57,12 +59,42 @@ namespace SnykGhe.Core.Messaging
                 DeliveryId = GetProperty(args.Message, GitHubWebhookMessageProperties.DeliveryId),
             };
 
-            // Let exceptions propagate: the processor abandons the message for redelivery / dead-lettering.
-            await _dispatcher.DispatchAsync(message);
+            try
+            {
+                // Let exceptions propagate: the processor abandons the message for redelivery / dead-lettering.
+                await _dispatcher.DispatchAsync(message);
+            }
+            catch (ScanInterruptedException) when (
+                ScanRedeliveryPolicy.ShouldRedeliver(args.Message.DeliveryCount, _options.ScanInterruptionRedeliveryLimit))
+            {
+                // Expected during a scale-in/recycle: the scan was killed mid-run and still has retry budget.
+                // Rethrow so the message is abandoned and redelivered to a healthy replica, but log it as
+                // routine drain, not an error.
+                _logger.LogInformation(
+                    "Draining: scan for delivery {Delivery} interrupted by shutdown (delivery {Count}); abandoning for redelivery.",
+                    LogSanitizer.Clean(message.DeliveryId), args.Message.DeliveryCount);
+                throw;
+            }
+            catch (ScanInterruptedException)
+            {
+                // Retry budget spent: a scan that keeps getting scaled in (longer than the cooldown window)
+                // would loop to the dead-letter queue. Stop here and let auto-complete settle the message so
+                // the "could not complete" check already posted is the terminal state, not a silent dead-letter.
+                _logger.LogWarning(
+                    "Scan for delivery {Delivery} interrupted by shutdown {Count} times (limit {Limit}); giving up, reported could-not-complete.",
+                    LogSanitizer.Clean(message.DeliveryId), args.Message.DeliveryCount, _options.ScanInterruptionRedeliveryLimit);
+            }
         }
 
         private Task OnErrorAsync(ProcessErrorEventArgs args)
         {
+            // A handler that threw ScanInterruptedException is surfaced here as a processing error; it is an
+            // expected drain path (already logged at OnMessageAsync), so do not repeat it as an error.
+            if (args.Exception is ScanInterruptedException)
+            {
+                return Task.CompletedTask;
+            }
+
             _logger.LogError(args.Exception, "Service Bus webhook processor error from {Source}", args.ErrorSource);
             return Task.CompletedTask;
         }

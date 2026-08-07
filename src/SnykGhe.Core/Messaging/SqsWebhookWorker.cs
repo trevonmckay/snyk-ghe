@@ -5,6 +5,7 @@ using SnykGhe.Contracts;
 using SnykGhe.Core.Configuration;
 using SnykGhe.Core.Infrastructure;
 using SnykGhe.Core.Processing;
+using SnykGhe.Core.Snyk;
 
 namespace SnykGhe.Core.Messaging
 {
@@ -53,6 +54,8 @@ namespace SnykGhe.Core.Messaging
                         WaitTimeSeconds = LongPollSeconds,
                         VisibilityTimeout = _options.VisibilityTimeoutSeconds,
                         MessageAttributeNames = new List<string> { "All" },
+                        // ApproximateReceiveCount drives the interrupted-scan redelivery backstop below.
+                        MessageSystemAttributeNames = new List<string> { "ApproximateReceiveCount" },
                     }, stoppingToken);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -78,6 +81,7 @@ namespace SnykGhe.Core.Messaging
         private async Task ProcessOneAsync(Message sqsMessage, CancellationToken cancellationToken)
         {
             var deliveryId = GetAttribute(sqsMessage, GitHubWebhookMessageProperties.DeliveryId);
+            var receiveCount = ReceiveCount(sqsMessage);
             try
             {
                 var message = new GitHubWebhookMessage
@@ -95,6 +99,34 @@ namespace SnykGhe.Core.Messaging
             {
                 // Shutting down: leave the message for redelivery after the visibility timeout.
             }
+            catch (ScanInterruptedException) when (
+                ScanRedeliveryPolicy.ShouldRedeliver(receiveCount, _options.ScanInterruptionRedeliveryLimit))
+            {
+                // A scale-in/recycle killed the scan mid-run and it still has retry budget. Do not delete:
+                // SQS redelivers after the visibility timeout so a healthy consumer re-runs it. Routine drain.
+                _logger.LogInformation(
+                    "Draining: scan for delivery {Delivery} interrupted by shutdown (receive {Count}); leaving for redelivery.",
+                    LogSanitizer.Clean(deliveryId), receiveCount);
+            }
+            catch (ScanInterruptedException)
+            {
+                // Retry budget spent: delete so a scan that keeps getting scaled in does not loop to the DLQ.
+                // The "could not complete" check already posted is the terminal state. A delete failure here
+                // must not escape (it would fault the receive loop); on failure the message simply redelivers
+                // and eventually dead-letters via redrive — the same bounded outcome, just less tidy.
+                _logger.LogWarning(
+                    "Scan for delivery {Delivery} interrupted by shutdown {Count} times (limit {Limit}); giving up, reported could-not-complete.",
+                    LogSanitizer.Clean(deliveryId), receiveCount, _options.ScanInterruptionRedeliveryLimit);
+                try
+                {
+                    await _client.DeleteMessageAsync(_options.QueueUrl, sqsMessage.ReceiptHandle, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to delete given-up delivery {Delivery}; it will redeliver until redrive dead-letters it.",
+                        LogSanitizer.Clean(deliveryId));
+                }
+            }
             catch (Exception ex)
             {
                 // Do not delete: SQS redelivers after the visibility timeout, then dead-letters via redrive.
@@ -106,5 +138,14 @@ namespace SnykGhe.Core.Messaging
             message.MessageAttributes is not null && message.MessageAttributes.TryGetValue(key, out var value)
                 ? value.StringValue
                 : null;
+
+        // SQS delivers ApproximateReceiveCount as a system attribute (1 on first receive, incrementing each
+        // redelivery). Absent or unparseable, assume the first receive so an interrupted scan still retries.
+        private static int ReceiveCount(Message message) =>
+            message.Attributes is not null
+            && message.Attributes.TryGetValue("ApproximateReceiveCount", out var raw)
+            && int.TryParse(raw, out var count)
+                ? count
+                : 1;
     }
 }

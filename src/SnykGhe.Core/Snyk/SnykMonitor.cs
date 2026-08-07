@@ -61,6 +61,12 @@ namespace SnykGhe.Core.Snyk
                     applyTimeout: true,
                     timeoutSecondsOverride: _options.MonitorTimeoutSeconds);
             }
+            catch (ScanInterruptedException)
+            {
+                // Host is shutting down mid-monitor: not a monitor failure to swallow. Let it propagate so the
+                // delivery is redelivered and the whole scan re-runs on a healthy replica.
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Snyk monitor failed in {Dir}; check will have no Snyk link.", context.WorkingDirectory);
