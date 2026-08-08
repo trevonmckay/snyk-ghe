@@ -28,7 +28,27 @@ namespace SnykGhe.Core.Snyk
             SnykCliRunner.AddExcludeArgs(args, context.Policy);
 
             var outcome = await _cli.RunAsync(args, context.WorkingDirectory, cancellationToken);
+            var result = InterpretOutcome(outcome);
 
+            if (result.NotApplicable)
+            {
+                _logger.LogInformation("Snyk Open Source found no supported manifests to scan; marking not applicable.");
+            }
+            else if (result.Failed)
+            {
+                _logger.LogWarning("Snyk Open Source scan did not complete: {Error}", result.FailureMessage);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Maps a raw Snyk CLI outcome to a scan result. Pure (no I/O or logging) so the exit-code policy is
+        /// unit-testable without the CLI — in particular that exit 3 ("no supported manifests") is a skip, not
+        /// the failure that exit 2 (a real CLI/usage error) produces.
+        /// </summary>
+        internal static SnykScanResult InterpretOutcome(SnykCliOutcome outcome)
+        {
             if (outcome.AuthenticationFailed)
             {
                 return Failed("Snyk OAuth authentication failed.");
@@ -39,20 +59,24 @@ namespace SnykGhe.Core.Snyk
                 return Failed("Snyk scan timed out.");
             }
 
-            // Exit codes: 0 = no vulns, 1 = vulns found, 2 = CLI/usage error, 3 = no supported manifests.
-            if (outcome.ExitCode >= 2)
+            // The Snyk CLI documents exactly four exit codes. Exit 3 ("no supported manifests") means there is
+            // nothing for Open Source to scan (e.g. an infra-only repo), so it is a skip, not the failure that
+            // exit 2 (a real CLI/usage error) produces. Any undocumented code falls through to a failure so an
+            // unexpected outcome is surfaced rather than silently treated as a clean scan.
+            return outcome.ExitCode switch
             {
-                var message = string.IsNullOrWhiteSpace(outcome.StandardError)
+                0 or 1 => SnykScanResult.Parse(outcome.StandardOutput), // 0 = no vulns, 1 = vulns found
+                3 => NotApplicable(),                                   // no supported manifests — nothing to scan
+                _ => Failed(string.IsNullOrWhiteSpace(outcome.StandardError) // 2 = CLI/usage error (or anything unexpected)
                     ? $"Snyk CLI exited with code {outcome.ExitCode}."
-                    : outcome.StandardError.Trim();
-                _logger.LogWarning("Snyk CLI error (exit {Code}): {Error}", outcome.ExitCode, message);
-                return Failed(message);
-            }
-
-            return SnykScanResult.Parse(outcome.StandardOutput);
+                    : outcome.StandardError.Trim()),
+            };
         }
 
         private static SnykScanResult Failed(string message) =>
             new() { Projects = [], Failed = true, FailureMessage = message };
+
+        private static SnykScanResult NotApplicable() =>
+            new() { Projects = [], NotApplicable = true };
     }
 }

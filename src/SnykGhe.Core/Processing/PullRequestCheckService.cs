@@ -356,6 +356,11 @@ namespace SnykGhe.Core.Processing
 
         private static ProductScanResult ToProductResult(SnykScanResult scan, string? detailsUrl)
         {
+            if (scan.NotApplicable)
+            {
+                return ProductScanResult.Skip(SnykProduct.OpenSource);
+            }
+
             if (scan.Failed)
             {
                 return new ProductScanResult

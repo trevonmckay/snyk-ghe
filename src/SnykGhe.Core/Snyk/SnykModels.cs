@@ -44,6 +44,13 @@ namespace SnykGhe.Core.Snyk
         /// <summary>True when the CLI ran but produced no parseable JSON (e.g. a config/auth error).</summary>
         public bool Failed { get; init; }
 
+        /// <summary>
+        /// True when the scan found no supported manifests to test (Snyk CLI exit code 3) — there is simply
+        /// nothing for Open Source to scan (e.g. an infrastructure-only repo). Distinct from <see cref="Failed"/>
+        /// (a real tooling error): a not-applicable scan is reported as a skipped check, not a warning.
+        /// </summary>
+        public bool NotApplicable { get; init; }
+
         public string? FailureMessage { get; init; }
 
         public IEnumerable<SnykVulnerability> AllVulnerabilities =>
