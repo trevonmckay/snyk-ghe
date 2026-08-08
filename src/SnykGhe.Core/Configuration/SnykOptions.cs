@@ -79,6 +79,16 @@ namespace SnykGhe.Core.Configuration
         /// </summary>
         public List<string> DefaultExcludeDirs { get; set; } = [];
 
+        /// <summary>
+        /// Glob patterns matched against a pull request's <em>base</em> (target) branch to decide whether it is
+        /// scanned — the global default, overridable per-org and per-repo. Empty (the default) scans every PR,
+        /// so branch filtering is opt-in and upgrades are unaffected. Patterns support <c>*</c>/<c>?</c>
+        /// wildcards and the <c>$default</c> token (the repo's default branch); e.g.
+        /// <c>["$default", "main", "release/*"]</c> scans only PRs targeting those branches. See
+        /// <see cref="BranchFilter"/>.
+        /// </summary>
+        public List<string> ScanTargetBranches { get; set; } = [];
+
         /// <summary>Timeout for a single Snyk CLI invocation.</summary>
         public int ScanTimeoutSeconds { get; set; } = 600;
 

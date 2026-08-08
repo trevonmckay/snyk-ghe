@@ -32,8 +32,16 @@ namespace SnykGhe.Core.Storage
         /// <summary>Returns the repo-level scan overrides, or null when none are stored.</summary>
         Task<RepoScanConfig?> FindRepoConfigAsync(string gitHubOrg, string repo, CancellationToken cancellationToken);
 
-        /// <summary>Writes the repo-level exclude list authoritatively (an empty list clears it).</summary>
-        Task SetRepoConfigAsync(string gitHubOrg, string repo, IReadOnlyList<string> excludeDirs, CancellationToken cancellationToken);
+        /// <summary>
+        /// Writes the repo-level scan overrides authoritatively (an empty list clears that override): the Snyk
+        /// exclude list and the base-branch scan patterns.
+        /// </summary>
+        Task SetRepoConfigAsync(
+            string gitHubOrg,
+            string repo,
+            IReadOnlyList<string> excludeDirs,
+            IReadOnlyList<string> scanTargetBranches,
+            CancellationToken cancellationToken);
 
         /// <summary>Removes all repo-level overrides for a repo.</summary>
         Task RemoveRepoConfigAsync(string gitHubOrg, string repo, CancellationToken cancellationToken);

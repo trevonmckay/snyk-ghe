@@ -68,6 +68,7 @@ namespace SnykGhe.Core.Storage
             entity.Ecosystem = overlay.Ecosystem;
             entity.Suspended = overlay.Suspended;
             entity.ExcludeDirs = ExcludeList.Join(overlay.ExcludeDirs);
+            entity.ScanTargetBranches = BranchFilter.Join(overlay.ScanTargetBranches);
 
             await _table.UpsertEntityAsync(entity, TableUpdateMode.Replace, cancellationToken);
         }
@@ -110,10 +111,16 @@ namespace SnykGhe.Core.Storage
                 GitHubOrg = entity.GitHubOrg,
                 Repo = entity.Repo,
                 ExcludeDirs = ExcludeList.Split(entity.ExcludeDirs),
+                ScanTargetBranches = BranchFilter.Split(entity.ScanTargetBranches),
             };
         }
 
-        public async Task SetRepoConfigAsync(string gitHubOrg, string repo, IReadOnlyList<string> excludeDirs, CancellationToken cancellationToken)
+        public async Task SetRepoConfigAsync(
+            string gitHubOrg,
+            string repo,
+            IReadOnlyList<string> excludeDirs,
+            IReadOnlyList<string> scanTargetBranches,
+            CancellationToken cancellationToken)
         {
             var entity = new RepoScanConfigEntity
             {
@@ -121,6 +128,7 @@ namespace SnykGhe.Core.Storage
                 GitHubOrg = gitHubOrg,
                 Repo = repo,
                 ExcludeDirs = ExcludeList.Join(excludeDirs),
+                ScanTargetBranches = BranchFilter.Join(scanTargetBranches),
             };
 
             await _table.UpsertEntityAsync(entity, TableUpdateMode.Replace, cancellationToken);
@@ -151,6 +159,7 @@ namespace SnykGhe.Core.Storage
                 Ecosystem = entity.Ecosystem,
                 Suspended = entity.Suspended,
                 ExcludeDirs = ExcludeList.Split(entity.ExcludeDirs),
+                ScanTargetBranches = BranchFilter.Split(entity.ScanTargetBranches),
             };
         }
     }

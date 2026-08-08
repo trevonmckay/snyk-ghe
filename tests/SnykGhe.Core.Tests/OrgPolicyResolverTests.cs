@@ -36,14 +36,15 @@ namespace SnykGhe.Core.Tests
             public Task SetOrgPolicyAsync(string gitHubOrg, OrgPolicyOverlay overlay, CancellationToken cancellationToken) => Task.CompletedTask;
             public Task SetSuspendedAsync(string gitHubOrg, bool suspended, CancellationToken cancellationToken) => Task.CompletedTask;
             public Task RemoveAsync(string gitHubOrg, CancellationToken cancellationToken) => Task.CompletedTask;
-            public Task SetRepoConfigAsync(string gitHubOrg, string repo, IReadOnlyList<string> excludeDirs, CancellationToken cancellationToken) => Task.CompletedTask;
+            public Task SetRepoConfigAsync(string gitHubOrg, string repo, IReadOnlyList<string> excludeDirs, IReadOnlyList<string> scanTargetBranches, CancellationToken cancellationToken) => Task.CompletedTask;
             public Task RemoveRepoConfigAsync(string gitHubOrg, string repo, CancellationToken cancellationToken) => Task.CompletedTask;
         }
 
         private static OrgPolicyResolver Build(
             GitHubInstallationRecord? record,
             RepoScanConfig? repoConfig = null,
-            List<string>? defaultExcludeDirs = null) => new(
+            List<string>? defaultExcludeDirs = null,
+            List<string>? defaultScanTargetBranches = null) => new(
             new FakeRegistry(record, repoConfig),
             Options.Create(new SnykOptions
             {
@@ -51,6 +52,7 @@ namespace SnykGhe.Core.Tests
                 DefaultSeverityThreshold = "high",
                 DefaultEcosystem = "nuget",
                 DefaultExcludeDirs = defaultExcludeDirs ?? [],
+                ScanTargetBranches = defaultScanTargetBranches ?? [],
             }),
             NullLogger<OrgPolicyResolver>.Instance);
 
@@ -126,6 +128,52 @@ namespace SnykGhe.Core.Tests
                 .ResolveAsync("Acme", "atlas", CancellationToken.None);
 
             Assert.Equal(["node_modules", "obj", "shared", "docling-sidecar", "spaced"], policy.ExcludeDirs);
+        }
+
+        [Fact]
+        public async Task Resolve_ScanTargetBranches_AllEmpty_ScansEverything()
+        {
+            var policy = await Build(record: null).ResolveAsync("brand-new-org", "atlas", CancellationToken.None);
+
+            Assert.Empty(policy.ScanTargetBranches);
+            Assert.True(policy.ShouldScanTargetBranch("any-branch", "main"));
+        }
+
+        [Fact]
+        public async Task Resolve_ScanTargetBranches_GlobalDefault_AppliesWhenOrgAndRepoEmpty()
+        {
+            var record = new GitHubInstallationRecord { GitHubOrg = "Acme" };
+
+            var policy = await Build(record, defaultScanTargetBranches: ["$default", "main", "release/*"])
+                .ResolveAsync("Acme", "atlas", CancellationToken.None);
+
+            Assert.Equal(["$default", "main", "release/*"], policy.ScanTargetBranches);
+        }
+
+        [Fact]
+        public async Task Resolve_ScanTargetBranches_OrgOverridesGlobal_WhenRepoEmpty()
+        {
+            var record = new GitHubInstallationRecord { GitHubOrg = "Acme", ScanTargetBranches = ["main"] };
+
+            var policy = await Build(record, defaultScanTargetBranches: ["release/*"])
+                .ResolveAsync("Acme", "atlas", CancellationToken.None);
+
+            // Override, not union: the org list replaces the global default entirely.
+            Assert.Equal(["main"], policy.ScanTargetBranches);
+        }
+
+        [Fact]
+        public async Task Resolve_ScanTargetBranches_RepoOverridesOrgAndGlobal()
+        {
+            var record = new GitHubInstallationRecord { GitHubOrg = "Acme", ScanTargetBranches = ["main"] };
+            var repoConfig = new RepoScanConfig { Repo = "atlas", ScanTargetBranches = ["*"] };
+
+            var policy = await Build(record, repoConfig, defaultScanTargetBranches: ["release/*"])
+                .ResolveAsync("Acme", "atlas", CancellationToken.None);
+
+            // Most specific non-empty layer wins outright; '*' lets a repo opt back into scanning everything.
+            Assert.Equal(["*"], policy.ScanTargetBranches);
+            Assert.True(policy.ShouldScanTargetBranch("feature-only", "main"));
         }
     }
 }

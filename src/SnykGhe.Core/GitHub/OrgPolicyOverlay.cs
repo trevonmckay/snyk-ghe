@@ -18,5 +18,8 @@ namespace SnykGhe.Core.GitHub
         public bool Suspended { get; set; }
 
         public IReadOnlyList<string> ExcludeDirs { get; set; } = [];
+
+        /// <summary>Org-level base-branch scan patterns; empty clears the override. See <see cref="Configuration.BranchFilter"/>.</summary>
+        public IReadOnlyList<string> ScanTargetBranches { get; set; } = [];
     }
 }

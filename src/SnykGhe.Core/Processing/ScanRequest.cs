@@ -18,6 +18,16 @@ namespace SnykGhe.Core.Processing
         public required string HeadSha { get; init; }
 
         /// <summary>
+        /// The pull request's base (target) branch — the branch it merges into (e.g. <c>main</c> for a
+        /// <c>feature → main</c> PR). Drives the optional base-branch scan filter. Null when the base branch
+        /// could not be determined, in which case the filter fails open (the PR is scanned).
+        /// </summary>
+        public string? BaseRef { get; init; }
+
+        /// <summary>The repository's default branch, used to resolve the <c>$default</c> scan-filter token. May be null.</summary>
+        public string? DefaultBranch { get; init; }
+
+        /// <summary>
         /// The clone URL with any trailing <c>.git</c> removed, for Snyk's <c>--remote-repo-url</c>. Snyk uses
         /// this value verbatim as the target name, so a <c>.git</c> suffix surfaces as a confusing
         /// <c>owner/repo.git</c> target in the UI — distinct from the <c>owner/repo</c> target other tools create.
