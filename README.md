@@ -164,13 +164,46 @@ All keys bind from `appsettings.json` / environment variables (double-underscore
 | `Snyk:ScmIntegrationId` | Snyk SCM integration id (**Settings → Integrations → _your SCM_ → Integration ID**). Required when `Snyk:Engines:Code=Api`, which reads repository source through the integration rather than from the clone. Unused by the CLI engine |
 | `Storage:Provider` | `AzureTable` or `DynamoDb` |
 | `Storage:TableName` / `Storage:ScanCoordinationTableName` | Table/collection names for the installation registry (`installations`) and baseline-scan coordination (`scancoordination`). Both are created at startup |
-| `Storage:AdminApiKey` | Guards the `/api/admin/orgs` policy endpoints, the manual-scan endpoint, and the registration flow (closed if unset) |
+| `Auth:Methods` | Which auth methods protect the admin API: any of `AdminKey`, `OAuth2`. Empty leaves the admin API closed (the app still starts). See [Admin API authentication](docs/authentication.md) |
+| `Auth:AdminKey:Secret` | Shared secret for the `AdminKey` method (`X-Admin-Key` header). Inject from Key Vault / Secrets Manager (the deploy templates do this). Blank while `AdminKey` is enabled simply closes that path (not a startup error) |
+| `Auth:OAuth2:Authority` / `Audience` | OIDC issuer URL and expected token audience for the `OAuth2` (JWT bearer) method. Works with any OIDC provider (Entra, Okta, Ping) — no MSAL |
+| `Auth:OAuth2:RequiredScopes` / `RequiredRoles` | Scopes/roles that authorize an OAuth2 caller — a token needs any one of either. Both empty ⇒ any validly-issued token. Consumer-defined to match your IdP |
 | `ServiceBus:MaxConcurrentCalls` / `Sqs:MaxConcurrentMessages` | Scans processed at once by one replica/instance (default `1` — scans are heavy, so concurrency is added by scaling out, not by loading one host). On Azure, leave this at 1 and raise the deploy's `maxReplicas`; on AWS (one always-on instance) this **is** the concurrency knob, so raise it and the instance Cpu/Memory together |
 | `Host:ShutdownTimeoutSeconds` | Seconds the .NET host waits for the queue worker to drain in-flight scans on `SIGTERM` before forcing shutdown (default `240`). Keep it below the platform's termination grace period (Azure `terminationGracePeriodSeconds`, deploy-set to `300`) so the drain finishes before `SIGKILL` |
 | `ServiceBus:ScanInterruptionRedeliveryLimit` / `Sqs:ScanInterruptionRedeliveryLimit` | How many times a scan killed by a scale-in / recycle is redelivered to a healthy replica before the worker gives up and lets the posted "could not complete" check stand (default `3`, compared to the delivery/receive count). Bounds the retry so a scan that keeps outliving the scale-to-zero cooldown (Azure `scanProcessorCooldownSeconds`) cannot loop to the dead-letter queue. Keep it below the queue's max-delivery / redrive count (`5`) |
 | `SecretRepository:Provider` | `AzureKeyVault` / `AwsSecretsManager` / `None` — where the registration flow writes generated secrets |
 | `Registration:PublicBaseUrl` | This service's public URL used in the manifest (falls back to the request host) |
 | `Registration:WebhookUrl` | Webhook URL placed in the manifest when the public webhook endpoint is a different host than this service (scale-to-zero topology: the Function). Falls back to `{PublicBaseUrl}/api/github/webhooks` |
+| `Registration:StateSigningKey` | HMAC key for the registration state token. Falls back to `Auth:AdminKey:Secret`; set it explicitly to run registration under an `OAuth2`-only configuration |
+
+### Admin API authentication
+
+The admin/management API (`/api/admin/*` and the registration entry point) is protected by one or
+more configurable methods, selected with `Auth:Methods`:
+
+- **`AdminKey`** — a shared secret sent as `X-Admin-Key` (the examples below). Simple; good for
+  bootstrap, break-glass, and CI with a stored secret.
+- **`OAuth2`** — enterprise SSO via OIDC-issued **JWT bearer** tokens (`Authorization: Bearer …`),
+  validated against your identity provider. The app is a resource server that only *validates* tokens,
+  so it is vendor-agnostic across **Entra ID, Okta, and Ping** with no provider SDK (no MSAL). You
+  choose what authorizes a caller: a required **scope**, a required **role/group**, either, or (both
+  empty) any validly-issued token.
+
+Enable one or both — **any enabled method satisfies a request**, so OAuth2 can be rolled out alongside
+the existing key. Configuration is validated at **startup**, but only a genuine misconfiguration stops
+the app: a typo'd method name, or `OAuth2` without an authority/audience. Anything that merely leaves the
+admin API closed — an empty `Auth:Methods`, or a blank admin key — starts normally, with admin requests
+rejected until you configure a method.
+
+> **Upgrade note:** the admin key moved from `Storage:AdminApiKey` to `Auth:AdminKey:Secret` (env
+> `Auth__AdminKey__Secret`) — update your config/secret wiring when upgrading. The runtime behavior is
+> otherwise unchanged: with a blank key (or no methods configured) the app still starts, admin endpoints
+> closed, until you set `Auth:AdminKey:Secret` or enable `OAuth2`.
+
+See **[docs/authentication.md](docs/authentication.md)** for the full configuration reference,
+per-provider (Entra/Okta/Ping) setup, token-acquisition examples, and the Google/opaque-token
+limitation. The `X-Admin-Key` in the examples below can be replaced with `-H "Authorization: Bearer
+<token>"` when `OAuth2` is enabled.
 
 ### Scan engines
 
@@ -359,9 +392,9 @@ CloudFormation parameters instead.
 >   Build and push this app's image to your own registry and pass it in, or the deployment comes up
 >   serving the wrong thing.
 > - **Ingress is public.** GitHub has to reach the webhook endpoint, but the admin and registration
->   routes are exposed on the same host, guarded only by a shared key. Front them with your identity
->   provider (Entra ID / Easy Auth, or equivalent), restrict ingress, or leave `Storage:AdminApiKey`
->   unset to close them entirely.
+>   routes are exposed on the same host. Protect them with the built-in enterprise `OAuth2` method
+>   (OIDC — Entra/Okta/Ping) and/or the `AdminKey` shared secret via `Auth:Methods`, and optionally
+>   restrict ingress on top. See [Admin API authentication](#admin-api-authentication).
 > - **Scaling, SKUs, and retention are guesses.** Replica bounds, the Service Bus and SQS tiers, queue
 >   lock and visibility timeouts, and log retention are all set to reasonable defaults for a small
 >   installation, not tuned to your traffic. A scan can run for minutes, so queue timeouts and
@@ -392,7 +425,9 @@ the local run loop, and the enforced coding conventions. Participation is govern
 ## Security
 
 A deployment of this App holds a GitHub App private key, a webhook secret, a Snyk service-account
-credential, and an admin API key — together enough to write to every organization that installs it.
+credential, and (when the `AdminKey` method is enabled) an admin API key — together enough to write to
+every organization that installs it. The admin API can be fronted by enterprise OIDC (Entra/Okta/Ping)
+instead of, or alongside, the shared key — see [Admin API authentication](#admin-api-authentication).
 Please report vulnerabilities privately through
 [GitHub's private vulnerability reporting](https://github.com/trevonmckay/snyk-ghe/security/advisories/new),
 never in a public issue. See [SECURITY.md](SECURITY.md) for scope and what we most want to hear about.

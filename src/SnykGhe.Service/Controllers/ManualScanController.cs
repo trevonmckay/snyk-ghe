@@ -1,12 +1,12 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
-using Microsoft.Extensions.Options;
 using Octokit;
-using SnykGhe.Core.Configuration;
 using SnykGhe.Core.GitHub;
 using SnykGhe.Core.Infrastructure;
 using SnykGhe.Core.Processing;
 using SnykGhe.Core.Storage;
+using SnykGhe.Service.Authentication;
 
 namespace SnykGhe.Service.Controllers
 {
@@ -19,30 +19,28 @@ namespace SnykGhe.Service.Controllers
 
     /// <summary>
     /// Manually triggers a baseline scan of a repository branch. Enqueues the scan onto the same durable
-    /// queue and processing path as an automatic push (default branch on merge). Guarded by the admin API
-    /// key; front with Entra / Easy Auth in production.
+    /// queue and processing path as an automatic push (default branch on merge). Guarded by the
+    /// <see cref="AdminAuthorization.PolicyName"/> policy (admin key and/or OAuth2, per <c>Auth:Methods</c>).
     /// </summary>
     [ApiController]
     [Route("api/admin/scans")]
+    [Authorize(AdminAuthorization.PolicyName)]
     public sealed class ManualScanController : ControllerBase
     {
         private readonly IGitHubInstallationRegistry _registry;
         private readonly GitHubClientFactory _clientFactory;
         private readonly IWebhookQueue _queue;
-        private readonly StorageOptions _options;
         private readonly ILogger<ManualScanController> _logger;
 
         public ManualScanController(
             IGitHubInstallationRegistry registry,
             GitHubClientFactory clientFactory,
             IWebhookQueue queue,
-            IOptions<StorageOptions> options,
             ILogger<ManualScanController> logger)
         {
             _registry = registry;
             _clientFactory = clientFactory;
             _queue = queue;
-            _options = options.Value;
             _logger = logger;
         }
 
@@ -58,11 +56,6 @@ namespace SnykGhe.Service.Controllers
             [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] ManualScanRequest? body,
             CancellationToken cancellationToken)
         {
-            if (!AdminApiKeyGuard.Matches(Request.Headers["X-Admin-Key"].FirstOrDefault(), _options.AdminApiKey))
-            {
-                return Unauthorized();
-            }
-
             var record = await _registry.FindAsync(org, cancellationToken);
             if (record is null)
             {

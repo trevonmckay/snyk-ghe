@@ -15,6 +15,9 @@
     <!-- Stays on the App Insights 2.x line to share the same Microsoft.ApplicationInsights base as the
          Functions front door (see SnykGhe.Functions.csproj). -->
     <PackageReference Include="Microsoft.ApplicationInsights.AspNetCore" Version="2.22.0" />
+    <!-- Pinned to the ASP.NET Core shared-framework patch this app runs on. Provides vendor-agnostic
+         OIDC/JWT bearer validation for the admin API; no provider SDK (MSAL) is used. -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.3" />
   </ItemGroup>
 
 </Project>

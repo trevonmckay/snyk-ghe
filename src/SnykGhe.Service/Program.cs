@@ -4,9 +4,11 @@ using Azure.Extensions.AspNetCore.Configuration.Secrets;
 using Azure.Identity;
 using Azure.Messaging.ServiceBus;
 using Microsoft.ApplicationInsights.Extensibility;
+using Microsoft.Extensions.Options;
 using Octokit.Webhooks;
 using SnykGhe.Core.Configuration;
 using SnykGhe.Service;
+using SnykGhe.Service.Authentication;
 using SnykGhe.Service.Configuration;
 using SnykGhe.Core.Fix;
 using SnykGhe.Core.GitHub;
@@ -47,6 +49,12 @@ builder.Services
 builder.Services
     .AddOptions<SecretRepositoryOptions>()
     .Bind(builder.Configuration.GetSection(SecretRepositoryOptions.SectionName));
+
+builder.Services
+    .AddOptions<AuthOptions>()
+    .Bind(builder.Configuration.GetSection(AuthOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<AuthOptions>, AuthOptionsValidator>();
 
 var storageProvider = builder.Configuration
     .GetSection(StorageOptions.SectionName)
@@ -188,9 +196,65 @@ if (!string.IsNullOrWhiteSpace(builder.Configuration["APPLICATIONINSIGHTS_CONNEC
     }
 }
 
+// Admin API authentication. Which schemes are registered is driven by Auth:Methods; the AuthOptions
+// validator (ValidateOnStart) has already guaranteed the enabled methods carry their required settings, so
+// a fresh deploy fails loudly rather than exposing or locking out the admin surface. Any enabled scheme can
+// satisfy the AdminAccess policy — admin key or OAuth2 bearer — which is how both run side by side.
+var authOptions = builder.Configuration
+    .GetSection(AuthOptions.SectionName)
+    .Get<AuthOptions>() ?? new AuthOptions();
+
+var authenticationBuilder = builder.Services.AddAuthentication();
+var enabledSchemes = new List<string>();
+
+if (authOptions.AdminKeyEnabled)
+{
+    authenticationBuilder.AddScheme<AdminKeyAuthenticationOptions, AdminKeyAuthenticationHandler>(
+        AdminKeyAuthenticationHandler.SchemeName, _ => { });
+    enabledSchemes.Add(AdminKeyAuthenticationHandler.SchemeName);
+}
+
+if (authOptions.OAuth2Enabled)
+{
+    authenticationBuilder.AddJwtBearer(AuthOptions.OAuth2Method, options =>
+    {
+        options.Authority = authOptions.OAuth2.Authority;
+        options.Audience = authOptions.OAuth2.Audience;
+        options.RequireHttpsMetadata = authOptions.OAuth2.RequireHttpsMetadata;
+
+        // Keep the original JWT claim names (scp/roles/groups/...) instead of remapping them to the long
+        // WS-* URIs, so the configured Auth:OAuth2:ScopeClaimTypes / RoleClaimTypes match what IdPs emit.
+        options.MapInboundClaims = false;
+    });
+    enabledSchemes.Add(AuthOptions.OAuth2Method);
+}
+
+// No method enabled: leave the admin API closed (every request rejected) rather than failing startup —
+// a deployment that configures everything via app config may never call the admin endpoints. The closed
+// scheme gives the AdminAccess policy a scheme to challenge, so those endpoints return a clean 401.
+if (enabledSchemes.Count == 0)
+{
+    authenticationBuilder.AddScheme<AdminClosedAuthenticationOptions, AdminClosedAuthenticationHandler>(
+        AdminClosedAuthenticationHandler.SchemeName, _ => { });
+    enabledSchemes.Add(AdminClosedAuthenticationHandler.SchemeName);
+}
+
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy(AdminAuthorization.PolicyName, policy =>
+    {
+        policy.AddAuthenticationSchemes([.. enabledSchemes]);
+        policy.RequireAuthenticatedUser();
+        policy.RequireAssertion(context => AdminAuthorization.IsAuthorized(context, authOptions.OAuth2));
+    });
+});
+
 builder.Services.AddControllers();
 
 var app = builder.Build();
+
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapControllers();
 

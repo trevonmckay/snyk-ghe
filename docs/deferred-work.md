@@ -65,6 +65,24 @@ IaC. Snyk IaC uses granular per-format project types rather than a single `iac` 
 were never confirmed, so `SnykProjectType()` returns null for IaC and the row falls back to a plain count
 (no regression). **Revisit by** confirming Snyk's IaC `types` value(s) and extending the resolver.
 
+## Google and interactive login UI not supported
+
+The OAuth2/OIDC admin-API auth (see [authentication](authentication.md)) is a JWT-bearer **resource
+server**: it validates tokens, it does not run an interactive browser login. Two deliberate scope cuts:
+
+- **Google as an OAuth2 provider is out.** Google's OAuth2 *access* tokens are opaque (`ya29.…`), not
+  JWTs, so they cannot be validated by signature the way Entra/Okta/Ping JWT access tokens are. Only
+  Google *ID tokens* are JWTs, and an ID token is an identity assertion, not an API access grant.
+  Supporting Google would mean either accepting ID tokens (wrong semantics for API authorization) or
+  calling Google's opaque-token introspection endpoint on every request (a network round-trip per
+  call). **Revisit when** there is real demand and a chosen trade-off (ID-token acceptance vs.
+  introspection with caching).
+- **No interactive login UI / authorization-code flow.** There is no browser-facing admin dashboard,
+  so no cookie session or OIDC authorization-code + PKCE flow is implemented. Operators obtain a token
+  from their IdP out of band (CLI/device-code) and send it as a bearer token; CI uses
+  client-credentials. **Revisit when** a first-party admin web UI is built — that would justify the
+  authorization-code flow (and would make Google Workspace SSO via ID tokens a natural fit).
+
 ## Webhook processor: `PlanRescan()` extraction
 
 `GitHubWebhookEventProcessor` handlers (`ProcessPullRequestWebhookAsync`, `ProcessCheckRunWebhookAsync`)

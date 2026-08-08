@@ -74,10 +74,12 @@ hear about them:
 
 ## Notes for operators
 
-The admin and registration endpoints are protected only by a shared secret compared in constant time.
-Treat that as defense in depth, not as your only control. Front them with your identity provider
-(Entra ID / Easy Auth, or an equivalent) in any production deployment, and leave
-`Storage:AdminApiKey` unset if you don't need those endpoints — they're closed when it's empty.
+The admin and registration endpoints are protected by the methods you enable in `Auth:Methods`:
+enterprise OIDC (`OAuth2` — Entra/Okta/Ping, validated as JWT bearer tokens) and/or a shared secret
+(`Auth:AdminKey:Secret`, compared in constant time). Prefer `OAuth2` in production, and you can restrict
+ingress on top. Leaving `Auth:AdminKey:Secret` blank (or `Auth:Methods` without `AdminKey`) simply closes
+that path — every request is rejected rather than the endpoints opening. See
+[docs/authentication.md](docs/authentication.md).
 
 Store secrets in Key Vault or Secrets Manager, never in `appsettings.json`. In the Azure templates
 the App private key and webhook secret are written at runtime by the registration flow and are never

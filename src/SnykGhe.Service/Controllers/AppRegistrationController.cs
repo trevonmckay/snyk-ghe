@@ -1,14 +1,14 @@
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 using SnykGhe.Core.Configuration;
 using SnykGhe.Core.GitHub.Manifest;
 using SnykGhe.Core.Secrets;
 using SnykGhe.Core.Storage;
+using SnykGhe.Service.Authentication;
 
 namespace SnykGhe.Service.Controllers
 {
@@ -32,7 +32,6 @@ namespace SnykGhe.Service.Controllers
         private readonly IAppCredentialStore _credentialStore;
         private readonly IAppConfigStore _appConfig;
         private readonly RegistrationOptions _registration;
-        private readonly StorageOptions _storage;
         private readonly ILogger<AppRegistrationController> _logger;
 
         public AppRegistrationController(
@@ -41,7 +40,6 @@ namespace SnykGhe.Service.Controllers
             IAppCredentialStore credentialStore,
             IAppConfigStore appConfig,
             IOptions<RegistrationOptions> registration,
-            IOptions<StorageOptions> storage,
             ILogger<AppRegistrationController> logger)
         {
             _manifest = manifest;
@@ -49,15 +47,16 @@ namespace SnykGhe.Service.Controllers
             _credentialStore = credentialStore;
             _appConfig = appConfig;
             _registration = registration.Value;
-            _storage = storage.Value;
             _logger = logger;
         }
 
         [HttpGet("api/github/app/register")]
+        [Authorize(AdminAuthorization.PolicyName)]
         public IActionResult Register([FromQuery] string? org)
         {
-            if (!_state.IsEnabled || !IsAuthorized())
+            if (!_state.IsEnabled)
             {
+                // Registration is disabled unless a signing key is configured (see RegistrationStateProtector).
                 return Unauthorized();
             }
 
@@ -126,21 +125,6 @@ namespace SnykGhe.Service.Controllers
             string.IsNullOrWhiteSpace(_registration.PublicBaseUrl)
                 ? $"{Request.Scheme}://{Request.Host}"
                 : _registration.PublicBaseUrl.TrimEnd('/');
-
-        private bool IsAuthorized()
-        {
-            if (string.IsNullOrEmpty(_storage.AdminApiKey))
-            {
-                return false;
-            }
-
-            var provided = Request.Headers["X-Admin-Key"].FirstOrDefault()
-                ?? Request.Query["key"].FirstOrDefault();
-
-            return provided is not null && CryptographicOperations.FixedTimeEquals(
-                Encoding.UTF8.GetBytes(provided),
-                Encoding.UTF8.GetBytes(_storage.AdminApiKey));
-        }
 
         private static string RenderRegisterPage(Uri target, string manifestJson)
         {

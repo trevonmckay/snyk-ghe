@@ -7,18 +7,22 @@ namespace SnykGhe.Core.GitHub.Manifest
 {
     /// <summary>
     /// Issues and validates a short-lived signed token tying the manifest-creation redirect back to a
-    /// request that began at the admin-gated /register endpoint. Without it, a forged /created callback
-    /// could convert an attacker-created App and overwrite the real credentials in the secret store. The
-    /// admin key is the HMAC signing key, so a valid token can only originate from someone who passed the
-    /// admin gate.
+    /// request that began at the gated /register endpoint. Without it, a forged /created callback could
+    /// convert an attacker-created App and overwrite the real credentials in the secret store. The HMAC
+    /// signing key is <see cref="RegistrationOptions.StateSigningKey"/> when set, otherwise the admin key
+    /// (<see cref="AdminKeyOptions.Secret"/>) — so an OAuth2-only deployment can still run registration by
+    /// configuring a dedicated signing key, while admin-key deployments are unaffected.
     /// </summary>
     public sealed class RegistrationStateProtector
     {
         private readonly byte[] _key;
 
-        public RegistrationStateProtector(IOptions<StorageOptions> storage)
+        public RegistrationStateProtector(IOptions<RegistrationOptions> registration, IOptions<AuthOptions> auth)
         {
-            _key = Encoding.UTF8.GetBytes(storage.Value.AdminApiKey ?? string.Empty);
+            var signingKey = string.IsNullOrEmpty(registration.Value.StateSigningKey)
+                ? auth.Value.AdminKey.Secret
+                : registration.Value.StateSigningKey;
+            _key = Encoding.UTF8.GetBytes(signingKey ?? string.Empty);
         }
 
         /// <summary>False when no admin key is set; the registration flow is then disabled entirely.</summary>
