@@ -57,7 +57,7 @@ Configure a method (with its settings) to open the admin API.
 | `Auth:Methods` | Array of enabled methods: any of `AdminKey`, `OAuth2` (case-insensitive). Empty leaves the admin API closed (the app still starts). |
 | `Auth:AdminKey:Secret` | The shared secret for `AdminKey` (from Key Vault / Secrets Manager). If blank while `AdminKey` is enabled, that path is closed — no caller can authenticate with it — which is not a startup error. |
 | `Auth:OAuth2:Authority` | OIDC issuer URL; `{Authority}/.well-known/openid-configuration` is read for signing keys + issuer. Required when `OAuth2` is enabled. |
-| `Auth:OAuth2:Audience` | Expected token `aud`. **Entra:** for **v2** access tokens (the default once a custom Application ID URI is set — `requestedAccessTokenVersion: 2`) this is the API's **application (client) ID GUID**, *not* the App ID URI; only **v1** tokens carry the App ID URI in `aud`. **Okta/Ping:** whatever audience you configure on the authorization server. Required when `OAuth2` is enabled. |
+| `Auth:OAuth2:Audience` | Expected token `aud`. The exact value your IdP puts there depends on the provider (and, for some, the token version) — see [Provider setup](#provider-setup). Required when `OAuth2` is enabled. |
 | `Auth:OAuth2:RequireHttpsMetadata` | Require HTTPS for metadata (default `true`; set `false` only for a local dev IdP over HTTP). |
 | `Auth:OAuth2:RequiredScopes` | Scopes that authorize a request — a token needs **any** one. Empty + empty roles ⇒ any validly-issued token passes. Matched exactly (case-sensitive). |
 | `Auth:OAuth2:RequiredRoles` | Roles/groups that authorize a request — a token needs **any** one. Consumer-defined to match your IdP. |
@@ -105,9 +105,11 @@ your IdP uses a custom claim.
 
 ## Provider setup
 
-The app validates any OIDC-compliant JWT. The steps differ only in where you register the API and
-how you model "admin". In every case, `Authority` + `Audience` come from that registration, and you
-choose scope- or role/group-based authorization.
+The app validates any OIDC-compliant JWT, so it is not tied to a particular identity provider. The
+steps below differ only in where you register the API and how you model "admin"; the provider-specific
+quirks (what lands in `aud`, how to obtain a token) live in each subsection. In every case,
+`Authority` + `Audience` come from that registration, and you choose scope- or role/group-based
+authorization.
 
 ### Microsoft Entra ID
 
@@ -128,6 +130,19 @@ choose scope- or role/group-based authorization.
      client-credentials tokens — but only if the role's **allowed member types** include the caller
      type (a `User`-only role is never present in an app-only/client-credentials token).
 
+**Getting a token from a public client (e.g. the Azure CLI).** For a *delegated* token you must
+**expose at least one delegated scope** under *Expose an API* — without one, Entra rejects the
+request with `AADSTS650057: Invalid resource` (there is nothing for the client to ask for), even if
+admin is modeled purely as an app role. This is the only hard requirement. Optionally, add the client
+under *Expose an API → Authorized client applications* (the Azure CLI is
+`04b07795-8ddb-461a-bbee-02f9e1bf7b46`) to pre-authorize it and skip the per-user consent prompt;
+otherwise the user consents interactively on first use. The resulting token carries both the `scp`
+(scope) and any assigned `roles`, so either can satisfy the [scope-OR-role gate](#authorization-scope-or-role):
+
+```bash
+az account get-access-token --resource <application-id-uri> --query accessToken -o tsv
+```
+
 ### Okta
 
 1. Create (or reuse) a **custom authorization server**; its issuer is your `Authority`, e.g.
@@ -147,6 +162,14 @@ choose scope- or role/group-based authorization.
 ## Getting a token to call the API
 
 The app doesn't issue tokens — obtain one from your IdP out of band.
+
+> **Delegated (user/interactive) tokens need a scope exposed on the API.** However you model
+> authorization, the OAuth2 delegated flow requires the API to expose at least one scope before a
+> public or interactive client (a CLI, a desktop tool, a SPA) can request a token against it — an API
+> that exposes none cannot issue a delegated token, even when admin is modeled purely as a role or
+> group. This is a property of the flow, not of any one provider; where and how you expose a scope is
+> provider-specific (see [Provider setup](#provider-setup)). Client-credentials (service-to-service)
+> tokens are unaffected.
 
 Human operator (Entra, via Azure CLI):
 
