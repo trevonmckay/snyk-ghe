@@ -57,7 +57,7 @@ Configure a method (with its settings) to open the admin API.
 | `Auth:Methods` | Array of enabled methods: any of `AdminKey`, `OAuth2` (case-insensitive). Empty leaves the admin API closed (the app still starts). |
 | `Auth:AdminKey:Secret` | The shared secret for `AdminKey` (from Key Vault / Secrets Manager). If blank while `AdminKey` is enabled, that path is closed — no caller can authenticate with it — which is not a startup error. |
 | `Auth:OAuth2:Authority` | OIDC issuer URL; `{Authority}/.well-known/openid-configuration` is read for signing keys + issuer. Required when `OAuth2` is enabled. |
-| `Auth:OAuth2:Audience` | Expected token `aud` (the API's resource identifier / application ID URI). Required when `OAuth2` is enabled. |
+| `Auth:OAuth2:Audience` | Expected token `aud`. **Entra:** for **v2** access tokens (the default once a custom Application ID URI is set — `requestedAccessTokenVersion: 2`) this is the API's **application (client) ID GUID**, *not* the App ID URI; only **v1** tokens carry the App ID URI in `aud`. **Okta/Ping:** whatever audience you configure on the authorization server. Required when `OAuth2` is enabled. |
 | `Auth:OAuth2:RequireHttpsMetadata` | Require HTTPS for metadata (default `true`; set `false` only for a local dev IdP over HTTP). |
 | `Auth:OAuth2:RequiredScopes` | Scopes that authorize a request — a token needs **any** one. Empty + empty roles ⇒ any validly-issued token passes. Matched exactly (case-sensitive). |
 | `Auth:OAuth2:RequiredRoles` | Roles/groups that authorize a request — a token needs **any** one. Consumer-defined to match your IdP. |
@@ -96,7 +96,7 @@ your IdP uses a custom claim.
   "Methods": ["OAuth2", "AdminKey"],
   "OAuth2": {
     "Authority": "https://login.microsoftonline.com/<tenant-id>/v2.0",
-    "Audience": "api://snyk-ghe",
+    "Audience": "<api application (client) ID GUID>",
     "RequiredScopes": ["snykghe.admin"],
     "RequiredRoles": []
   }
@@ -112,13 +112,21 @@ choose scope- or role/group-based authorization.
 ### Microsoft Entra ID
 
 1. **Register the API** (App registration) → *Expose an API*: set an Application ID URI, e.g.
-   `api://snyk-ghe`. That URI is your `Audience`.
-2. `Authority` = `https://login.microsoftonline.com/<tenant-id>/v2.0`.
-3. Model admin either as:
+   `api://snyk-ghe`. Clients request tokens against this URI (e.g. `<uri>/.default`); it is *not*
+   necessarily the audience — see the next step.
+2. **Set `Audience` to match the token version.** Setting a custom Application ID URI switches the API
+   to **v2** access tokens (`requestedAccessTokenVersion: 2`), and Entra then puts the API's
+   **application (client) ID GUID** in the `aud` claim — so `Audience` is that GUID, *not* the URI.
+   Only v1 tokens (`requestedAccessTokenVersion` `null`/`1`) carry the Application ID URI in `aud`.
+   When unsure, decode a real token at `jwt.ms` and copy its `aud` verbatim.
+3. `Authority` = `https://login.microsoftonline.com/<tenant-id>/v2.0`.
+4. Model admin either as:
    - a **delegated scope** (Expose an API → add a scope, e.g. `snykghe.admin`) → set
      `RequiredScopes: ["snykghe.admin"]` (scopes arrive in the `scp` claim); or
    - an **app role** (App roles → assign to users/groups/apps) → set `RequiredRoles: ["<role value>"]`
-     (roles arrive in the `roles` claim). App roles work for both user and client-credentials tokens.
+     (roles arrive in the `roles` claim). App roles carry in `roles` for both user and
+     client-credentials tokens — but only if the role's **allowed member types** include the caller
+     type (a `User`-only role is never present in an app-only/client-credentials token).
 
 ### Okta
 

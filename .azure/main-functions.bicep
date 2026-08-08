@@ -84,7 +84,7 @@ param authMethods array = [ 'AdminKey' ]
 @description('OAuth2/OIDC issuer URL (Auth:OAuth2:Authority), e.g. https://login.microsoftonline.com/<tenant>/v2.0. Required when authMethods includes "OAuth2".')
 param authOAuth2Authority string = ''
 
-@description('Expected token audience (Auth:OAuth2:Audience) — the Application ID URI of the API app registration. Required when authMethods includes "OAuth2".')
+@description('Expected token audience (Auth:OAuth2:Audience). For Entra v2 tokens this is the API application (client) ID GUID; for v1 tokens the Application ID URI. Required when authMethods includes "OAuth2".')
 param authOAuth2Audience string = ''
 
 @description('Scopes that authorize an admin caller (Auth:OAuth2:RequiredScopes); a token needs any one. Empty scopes AND empty roles accepts any validly-issued token for the audience.')
