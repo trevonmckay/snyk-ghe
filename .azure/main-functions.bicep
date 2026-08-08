@@ -75,8 +75,23 @@ param snykOAuthClientId string = ''
 param snykOAuthClientSecret string = ''
 
 @secure()
-@description('API key protecting the admin mapping endpoint.')
+@description('Shared secret for the AdminKey auth method (Auth:AdminKey:Secret / X-Admin-Key header). Blank leaves the AdminKey path closed rather than failing startup.')
 param adminApiKey string
+
+@description('Admin API auth methods (Auth:Methods): any of "AdminKey", "OAuth2". Empty leaves the admin API closed. Add "OAuth2" to accept enterprise OIDC bearer tokens alongside (or instead of) the key.')
+param authMethods array = [ 'AdminKey' ]
+
+@description('OAuth2/OIDC issuer URL (Auth:OAuth2:Authority), e.g. https://login.microsoftonline.com/<tenant>/v2.0. Required when authMethods includes "OAuth2".')
+param authOAuth2Authority string = ''
+
+@description('Expected token audience (Auth:OAuth2:Audience) — the Application ID URI of the API app registration. Required when authMethods includes "OAuth2".')
+param authOAuth2Audience string = ''
+
+@description('Scopes that authorize an admin caller (Auth:OAuth2:RequiredScopes); a token needs any one. Empty scopes AND empty roles accepts any validly-issued token for the audience.')
+param authOAuth2RequiredScopes array = []
+
+@description('Roles/groups that authorize an admin caller (Auth:OAuth2:RequiredRoles); a token needs any one. App-only (client-credentials) tokens carry roles, not scopes.')
+param authOAuth2RequiredRoles array = []
 
 @description('Service Bus queue that buffers webhook deliveries between the Function and the scan worker.')
 param serviceBusQueueName string = 'webhook-deliveries'
@@ -529,6 +544,18 @@ var snykAuthEnv = concat(
   empty(snykOAuthClientSecret) ? [] : [ { name: 'Snyk__OAuthClientSecret', secretRef: 'snyk-oauth-client-secret' } ]
 )
 
+// Admin API auth (Auth:*). Methods are emitted from index 0 so they override the image's appsettings
+// default; OAuth2 authority/audience and the scope/role arrays are emitted only when supplied. None of
+// these are secrets, so they travel as plain env — the JWT signing keys come from the IdP's JWKS.
+var adminAuthMethodsEnv = [for (method, i) in authMethods: { name: 'Auth__Methods__${i}', value: method }]
+var adminAuthOAuth2ScalarEnv = concat(
+  empty(authOAuth2Authority) ? [] : [ { name: 'Auth__OAuth2__Authority', value: authOAuth2Authority } ],
+  empty(authOAuth2Audience) ? [] : [ { name: 'Auth__OAuth2__Audience', value: authOAuth2Audience } ]
+)
+var adminAuthScopesEnv = [for (scope, i) in authOAuth2RequiredScopes: { name: 'Auth__OAuth2__RequiredScopes__${i}', value: scope }]
+var adminAuthRolesEnv = [for (role, i) in authOAuth2RequiredRoles: { name: 'Auth__OAuth2__RequiredRoles__${i}', value: role }]
+var adminAuthEnv = concat(adminAuthMethodsEnv, adminAuthOAuth2ScalarEnv, adminAuthScopesEnv, adminAuthRolesEnv)
+
 resource app 'Microsoft.App/containerApps@2025-07-01' = {
   name: appName
   location: location
@@ -622,7 +649,7 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
             // the webhook secret via its own Key Vault reference.
             { name: 'SecretRepository__Provider', value: 'AzureKeyVault' }
             { name: 'SecretRepository__KeyVaultUri', value: kv.properties.vaultUri }
-          ], snykAuthEnv)
+          ], snykAuthEnv, adminAuthEnv)
         }
       ]
       scale: {
