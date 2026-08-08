@@ -2,8 +2,11 @@ namespace SnykGhe.Core.Configuration
 {
     /// <summary>
     /// Configuration for the self-service GitHub App registration flow (manifest creation + post-install
-    /// setup page). The flow is disabled unless the admin key (<see cref="StorageOptions.AdminApiKey"/>)
-    /// is set, since registration writes App credentials to the secret store.
+    /// setup page). The flow is disabled unless a state-signing key is available — either
+    /// <see cref="StateSigningKey"/> or, as a fallback, the admin key
+    /// (<see cref="AdminKeyOptions.Secret"/>) — since registration writes App credentials to the secret
+    /// store and the signed state token is what proves a <c>/created</c> callback began at the gated
+    /// <c>/register</c> endpoint.
     /// </summary>
     public sealed class RegistrationOptions
     {
@@ -11,6 +14,14 @@ namespace SnykGhe.Core.Configuration
 
         /// <summary>Name pre-filled in the manifest; the operator can still rename on GitHub's confirmation page.</summary>
         public string AppName { get; set; } = "snyk-ghe";
+
+        /// <summary>
+        /// Dedicated HMAC key for signing the registration state token. Falls back to
+        /// <see cref="AdminKeyOptions.Secret"/> when unset, so admin-key deployments keep working; set it
+        /// explicitly to run the registration flow under an OAuth2-only configuration (no admin key). Inject
+        /// from Key Vault / Secrets Manager, never commit it.
+        /// </summary>
+        public string? StateSigningKey { get; set; }
 
         /// <summary>
         /// This service's externally reachable base URL (e.g. <c>https://snyk-ghe.example.com</c>), used to

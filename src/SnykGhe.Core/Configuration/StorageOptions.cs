@@ -42,14 +42,5 @@ namespace SnykGhe.Core.Configuration
 
         /// <summary>AWS region for DynamoDB. Falls back to the SDK's default resolution (AWS_REGION) when empty.</summary>
         public string? AwsRegion { get; set; }
-
-        // --- Admin endpoint ---
-
-        /// <summary>
-        /// API key required (in the X-Admin-Key header) to set per-org Snyk mappings.
-        /// Empty disables the admin endpoint entirely (closed by default). Front with Entra / Easy Auth
-        /// or equivalent in production; this is a defense-in-depth secondary control.
-        /// </summary>
-        public string? AdminApiKey { get; set; }
     }
 }

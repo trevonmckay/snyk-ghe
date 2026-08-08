@@ -1,8 +1,6 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
-using SnykGhe.Core.Configuration;
 using SnykGhe.Core.GitHub;
 using SnykGhe.Core.Json;
 using SnykGhe.Core.Storage;
@@ -10,10 +8,11 @@ using SnykGhe.Service.Controllers;
 
 namespace SnykGhe.Core.Tests
 {
+    // Authorization is enforced by the AdminAccess policy in the middleware pipeline, not inside the
+    // controller, so these tests drive the actions directly and cover behavior only. The admin-key and
+    // OAuth2 gate are covered by AdminKeyAuthenticationHandlerTests and AdminAuthorizationTests.
     public class AdminControllerTests
     {
-        private const string AdminKey = "secret-admin-key";
-
         private sealed class CapturingRegistry : IGitHubInstallationRegistry
         {
             public GitHubInstallationRecord? OrgRecord { get; set; }
@@ -55,32 +54,12 @@ namespace SnykGhe.Core.Tests
             public Task RemoveAsync(string gitHubOrg, CancellationToken cancellationToken) => Task.CompletedTask;
         }
 
-        private static AdminController Build(CapturingRegistry registry, bool authorized = true)
+        private static AdminController Build(CapturingRegistry registry)
         {
-            var controller = new AdminController(
-                registry,
-                Options.Create(new StorageOptions { AdminApiKey = AdminKey }),
-                NullLogger<AdminController>.Instance);
-
-            var httpContext = new DefaultHttpContext();
-            if (authorized)
+            return new AdminController(registry, NullLogger<AdminController>.Instance)
             {
-                httpContext.Request.Headers["X-Admin-Key"] = AdminKey;
-            }
-
-            controller.ControllerContext = new ControllerContext { HttpContext = httpContext };
-            return controller;
-        }
-
-        [Fact]
-        public async Task PutOrg_MissingKey_Unauthorized()
-        {
-            var registry = new CapturingRegistry();
-            var result = await Build(registry, authorized: false)
-                .PutOrg("acme", new OrgPolicyPutRequest { SnykOrgId = "snyk-1" }, CancellationToken.None);
-
-            Assert.IsType<UnauthorizedResult>(result);
-            Assert.Null(registry.WrittenOverlay);
+                ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
+            };
         }
 
         [Fact]

@@ -1,11 +1,12 @@
 using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Options;
 using SnykGhe.Core.Configuration;
 using SnykGhe.Core.GitHub;
 using SnykGhe.Core.Infrastructure;
 using SnykGhe.Core.Json;
 using SnykGhe.Core.Storage;
+using SnykGhe.Service.Authentication;
 
 namespace SnykGhe.Service.Controllers
 {
@@ -57,35 +58,28 @@ namespace SnykGhe.Service.Controllers
     }
 
     /// <summary>
-    /// Manages per-org Snyk mappings, policy overrides, and per-repo scan overrides. Guarded by an API key;
-    /// front with Entra / Easy Auth in production.
+    /// Manages per-org Snyk mappings, policy overrides, and per-repo scan overrides. Guarded by the
+    /// <see cref="AdminAuthorization.PolicyName"/> policy (admin key and/or OAuth2, per <c>Auth:Methods</c>).
     /// </summary>
     [ApiController]
     [Route("api/admin/orgs")]
+    [Authorize(AdminAuthorization.PolicyName)]
     public sealed class AdminController : ControllerBase
     {
         private readonly IGitHubInstallationRegistry _registry;
-        private readonly StorageOptions _options;
         private readonly ILogger<AdminController> _logger;
 
         public AdminController(
             IGitHubInstallationRegistry registry,
-            IOptions<StorageOptions> options,
             ILogger<AdminController> logger)
         {
             _registry = registry;
-            _options = options.Value;
             _logger = logger;
         }
 
         [HttpGet("{org}")]
         public async Task<IActionResult> Get(string org, CancellationToken cancellationToken)
         {
-            if (!IsAuthorized())
-            {
-                return Unauthorized();
-            }
-
             var record = await _registry.FindAsync(org, cancellationToken);
             return record is null ? NotFound() : Ok(OrgView(record));
         }
@@ -93,11 +87,6 @@ namespace SnykGhe.Service.Controllers
         [HttpPut("{org}")]
         public async Task<IActionResult> PutOrg(string org, [FromBody] OrgPolicyPutRequest body, CancellationToken cancellationToken)
         {
-            if (!IsAuthorized())
-            {
-                return Unauthorized();
-            }
-
             if (!TrySanitizeExcludes(body.ExcludeDirs, out var excludeDirs, out var error))
             {
                 return BadRequest(error);
@@ -126,11 +115,6 @@ namespace SnykGhe.Service.Controllers
         [HttpPatch("{org}")]
         public async Task<IActionResult> PatchOrg(string org, [FromBody] OrgPolicyPatchRequest body, CancellationToken cancellationToken)
         {
-            if (!IsAuthorized())
-            {
-                return Unauthorized();
-            }
-
             var record = await _registry.FindAsync(org, cancellationToken);
             if (record is null)
             {
@@ -195,11 +179,6 @@ namespace SnykGhe.Service.Controllers
         [HttpGet("{org}/repos/{repo}")]
         public async Task<IActionResult> GetRepo(string org, string repo, CancellationToken cancellationToken)
         {
-            if (!IsAuthorized())
-            {
-                return Unauthorized();
-            }
-
             var config = await _registry.FindRepoConfigAsync(org, repo, cancellationToken);
             return config is null
                 ? NotFound()
@@ -209,11 +188,6 @@ namespace SnykGhe.Service.Controllers
         [HttpPut("{org}/repos/{repo}")]
         public async Task<IActionResult> PutRepo(string org, string repo, [FromBody] RepoConfigPutRequest body, CancellationToken cancellationToken)
         {
-            if (!IsAuthorized())
-            {
-                return Unauthorized();
-            }
-
             if (!TrySanitizeExcludes(body.ExcludeDirs, out var excludeDirs, out var error))
             {
                 return BadRequest(error);
@@ -232,11 +206,6 @@ namespace SnykGhe.Service.Controllers
         [HttpPatch("{org}/repos/{repo}")]
         public async Task<IActionResult> PatchRepo(string org, string repo, [FromBody] RepoConfigPatchRequest body, CancellationToken cancellationToken)
         {
-            if (!IsAuthorized())
-            {
-                return Unauthorized();
-            }
-
             var config = await _registry.FindRepoConfigAsync(org, repo, cancellationToken);
             if (config is null)
             {
@@ -273,11 +242,6 @@ namespace SnykGhe.Service.Controllers
         [HttpDelete("{org}/repos/{repo}")]
         public async Task<IActionResult> DeleteRepo(string org, string repo, CancellationToken cancellationToken)
         {
-            if (!IsAuthorized())
-            {
-                return Unauthorized();
-            }
-
             await _registry.RemoveRepoConfigAsync(org, repo, cancellationToken);
             _logger.LogInformation("Removed scan config for {Org}/{Repo}", LogSanitizer.Clean(org), LogSanitizer.Clean(repo));
             return NoContent();
@@ -367,8 +331,5 @@ namespace SnykGhe.Service.Controllers
             ExcludeDirs = excludeDirs,
             ScanTargetBranches = scanTargetBranches,
         };
-
-        private bool IsAuthorized() =>
-            AdminApiKeyGuard.Matches(Request.Headers["X-Admin-Key"].FirstOrDefault(), _options.AdminApiKey);
     }
 }

@@ -33,7 +33,9 @@ namespace SnykGhe.Service.Controllers
                   <h1>Snyk GHE installed</h1>
                   <p>Installation <code>{{install}}</code> ({{action}}) is connected. Pull requests will be
                      scanned automatically once this org is mapped to a Snyk org.</p>
-                  <p>Map this GitHub org to a Snyk org (run by an operator with the admin key):</p>
+                  <p>Map this GitHub org to a Snyk org (authenticate with the admin key as shown, or replace
+                     the <code>X-Admin-Key</code> header with <code>Authorization: Bearer &lt;token&gt;</code>
+                     when OAuth2 is enabled):</p>
                   <pre>{{curl}}</pre>
                 </body></html>
                 """;

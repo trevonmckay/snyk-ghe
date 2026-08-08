@@ -329,7 +329,7 @@ resource app 'Microsoft.App/containerApps@2025-07-01' = {
             { name: 'Snyk__ScmIntegrationId', value: snykScmIntegrationId }
             { name: 'Storage__TableServiceUri', value: storage.properties.primaryEndpoints.table }
             { name: 'Storage__TableName', value: 'installations' }
-            { name: 'Storage__AdminApiKey', secretRef: 'admin-api-key' }
+            { name: 'Auth__AdminKey__Secret', secretRef: 'admin-api-key' }
             { name: 'ServiceBus__FullyQualifiedNamespace', value: '${serviceBus.name}.servicebus.windows.net' }
             { name: 'ServiceBus__QueueName', value: serviceBusQueueName }
           ]
