@@ -6,7 +6,7 @@ human user's Personal Access Token.
 
 > **Why this exists:** Snyk's native GitHub integration acts on behalf of the user who connected it,
 > so every PR check and comment shows up as *that person*. On **GitHub Enterprise Cloud with Data
-> Residency** (`ghe.com`) with Enterprise Managed Users, provisioning a dedicated machine account is
+> Residency** (`ghe.com`) with Enterprise Managed Users, provisioning a dedicated machine account can be
 > slow or impractical. A GitHub App gives you a first-class `yourapp[bot]` identity without a
 > Marketplace listing or a human account.
 
