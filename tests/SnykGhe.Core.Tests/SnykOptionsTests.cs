@@ -28,5 +28,29 @@ namespace SnykGhe.Core.Tests
 
             Assert.Equal(1200, options.MonitorTimeoutSeconds);
         }
+
+        [Fact]
+        public void CleanupOnPullRequestClose_DefaultsToTrue()
+        {
+            var options = new SnykOptions();
+
+            Assert.True(options.CleanupOnPullRequestClose);
+        }
+
+        [Fact]
+        public void CleanupOnPullRequestClose_BindsFromConfiguration()
+        {
+            var config = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Snyk:CleanupOnPullRequestClose"] = "false",
+                })
+                .Build();
+
+            var options = new SnykOptions();
+            config.GetSection(SnykOptions.SectionName).Bind(options);
+
+            Assert.False(options.CleanupOnPullRequestClose);
+        }
     }
 }

@@ -58,7 +58,20 @@ namespace SnykGhe.Core.Webhooks
             PullRequestAction action,
             CancellationToken cancellationToken = default)
         {
-            if (pullRequestEvent.Action is not string actionName || !ScanTriggeringActions.Contains(actionName))
+            if (pullRequestEvent.Action is not string actionName)
+            {
+                return;
+            }
+
+            // A closed PR (merged or not) ends its branch's scan lifecycle: tear down the per-PR monitored
+            // snapshot here so it is cleaned up even when the branch is not deleted (no delete webhook fires).
+            if (string.Equals(actionName, "closed", StringComparison.OrdinalIgnoreCase))
+            {
+                await CleanupClosedPullRequestAsync(pullRequestEvent, cancellationToken);
+                return;
+            }
+
+            if (!ScanTriggeringActions.Contains(actionName))
             {
                 return;
             }
@@ -193,9 +206,52 @@ namespace SnykGhe.Core.Webhooks
                 return;
             }
 
-            var gitHubOrg = repository.Owner.Login;
-            // Cleanup only needs the Snyk org mapping; excludes don't apply to project teardown, so skip the
-            // per-repo config lookup by resolving org-level policy alone.
+            _logger.LogInformation("Branch {Ref} deleted on {Repo}; cleaning up Snyk projects.",
+                LogSanitizer.Clean(deleteEvent.Ref), LogSanitizer.Clean(repository.FullName));
+
+            await CleanupBranchProjectsAsync(repository.Owner.Login, cloneUrl, deleteEvent.Ref, cancellationToken);
+        }
+
+        /// <summary>
+        /// Tears down a closed pull request's monitored branch snapshot (see
+        /// <see cref="SnykOptions.CleanupOnPullRequestClose"/>). PR-branch monitoring publishes a project under
+        /// the head branch's target reference; a PR closed while its branch persists — so no <c>delete</c>
+        /// webhook fires — would otherwise leave it orphaned. Idempotent with
+        /// <see cref="ProcessDeleteWebhookAsync"/>: when the branch is auto-deleted too, both fire and the
+        /// second finds nothing to remove.
+        /// </summary>
+        private async ValueTask CleanupClosedPullRequestAsync(PullRequestEvent pullRequestEvent, CancellationToken cancellationToken)
+        {
+            if (!_snyk.CleanupOnPullRequestClose)
+            {
+                return;
+            }
+
+            if (pullRequestEvent.Repository is not { CloneUrl: { } cloneUrl } repository)
+            {
+                _logger.LogWarning("Pull request closed event missing repository clone URL; skipping Snyk cleanup.");
+                return;
+            }
+
+            _logger.LogInformation("Pull request #{Pr} closed on {Repo}; cleaning up its Snyk branch projects.",
+                pullRequestEvent.Number, LogSanitizer.Clean(repository.FullName));
+
+            await CleanupBranchProjectsAsync(
+                repository.Owner.Login, cloneUrl, pullRequestEvent.PullRequest.Head.Ref, cancellationToken);
+        }
+
+        /// <summary>
+        /// Shared branch teardown for the delete and pull-request-closed triggers: resolves the GitHub org's
+        /// Snyk mapping and deletes the branch's CLI-origin projects. No-ops when the installation is suspended
+        /// or the org has no Snyk mapping. Only the Snyk org mapping is needed, so this resolves org-level
+        /// policy alone (excludes and per-repo config do not apply to teardown).
+        /// </summary>
+        private async ValueTask CleanupBranchProjectsAsync(
+            string gitHubOrg,
+            string cloneUrl,
+            string branchRef,
+            CancellationToken cancellationToken)
+        {
             var policy = await _policyResolver.ResolveAsync(gitHubOrg, repo: null, cancellationToken);
 
             if (policy.Suspended)
@@ -211,10 +267,7 @@ namespace SnykGhe.Core.Webhooks
             }
 
             var remoteRepoUrl = ScanRequest.NormalizeRemoteRepoUrl(cloneUrl);
-            _logger.LogInformation("Branch {Ref} deleted on {Repo}; cleaning up Snyk projects.",
-                LogSanitizer.Clean(deleteEvent.Ref), LogSanitizer.Clean(repository.FullName));
-
-            await _cleanupService.DeleteBranchProjectsAsync(policy.SnykOrgId, remoteRepoUrl, deleteEvent.Ref, cancellationToken);
+            await _cleanupService.DeleteBranchProjectsAsync(policy.SnykOrgId, remoteRepoUrl, branchRef, cancellationToken);
         }
 
         /// <summary>
