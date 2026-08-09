@@ -150,6 +150,16 @@ namespace SnykGhe.Core.Configuration
         public bool ScanIac { get; set; } = false;
 
         /// <summary>
+        /// When true, tear down a pull request's monitored branch snapshot when the PR is closed (merged or
+        /// not). PR-branch monitoring (<see cref="Monitor"/>) publishes a short-lived Snyk project under the
+        /// head branch's target reference; the <c>delete</c> webhook only removes it if the branch is deleted,
+        /// so a repo that does not auto-delete head branches would otherwise leave that project orphaned. On by
+        /// default; a no-op when <see cref="Monitor"/> is off (nothing was published to clean up) and idempotent
+        /// with the delete-webhook teardown when the branch is deleted too.
+        /// </summary>
+        public bool CleanupOnPullRequestClose { get; set; } = true;
+
+        /// <summary>
         /// When true, attach Snyk Code findings as Check Run annotations so each surfaces inline on the PR's
         /// "Files changed" tab (file, line, message). No extra permission or entitlement is required — it rides
         /// on the Check Run the app already posts. On by default; a no-op when <see cref="ScanCode"/> is false.
