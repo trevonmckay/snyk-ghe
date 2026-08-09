@@ -32,7 +32,7 @@ namespace SnykGhe.Core.Snyk
                 return SnykCredential.ApiToken(_options.Token!);
             }
 
-            throw new InvalidOperationException(
+            throw new SnykCredentialsNotConfiguredException(
                 "No Snyk credentials are configured: set Snyk:OAuthClientId/OAuthClientSecret, or Snyk:Token.");
         }
     }

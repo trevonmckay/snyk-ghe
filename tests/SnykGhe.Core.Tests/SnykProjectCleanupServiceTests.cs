@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Snyk.Client;
 using SnykGhe.Core.Configuration;
 using SnykGhe.Core.Snyk;
 
@@ -262,6 +263,154 @@ namespace SnykGhe.Core.Tests
 
             Assert.Equal(0, deleted);
             Assert.Empty(handler.Requests);
+        }
+
+        /// <summary>
+        /// Serves the happy-path OAuth/targets/projects responses but lets a test inject a failure: an HTTP
+        /// status on the project DELETE, an HTTP status on the targets listing, or a transport-level throw on
+        /// the DELETE (an <see cref="HttpRequestException"/> standing in for a DNS/connect failure that never
+        /// reached Snyk). Confirms a transient failure surfaces while an already-gone (404) resource does not.
+        /// </summary>
+        private sealed class FailingHandler : HttpMessageHandler
+        {
+            private readonly HttpStatusCode? _deleteStatus;
+            private readonly Exception? _deleteThrow;
+            private readonly HttpStatusCode _targetsStatus;
+            private readonly HttpStatusCode _oauthStatus;
+
+            public FailingHandler(
+                HttpStatusCode? deleteStatus = null,
+                Exception? deleteThrow = null,
+                HttpStatusCode targetsStatus = HttpStatusCode.OK,
+                HttpStatusCode oauthStatus = HttpStatusCode.OK)
+            {
+                _deleteStatus = deleteStatus;
+                _deleteThrow = deleteThrow;
+                _targetsStatus = targetsStatus;
+                _oauthStatus = oauthStatus;
+            }
+
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                var uri = request.RequestUri!;
+
+                if (uri.AbsoluteUri.Contains("/oauth2/token"))
+                {
+                    return Json(_oauthStatus, _oauthStatus == HttpStatusCode.OK
+                        ? """{"access_token":"tok-123","expires_in":3600}"""
+                        : string.Empty);
+                }
+
+                if (request.Method == HttpMethod.Delete)
+                {
+                    if (_deleteThrow is not null)
+                    {
+                        throw _deleteThrow;
+                    }
+
+                    return Json(_deleteStatus ?? HttpStatusCode.NoContent, string.Empty);
+                }
+
+                if (uri.AbsolutePath.EndsWith("/targets", StringComparison.Ordinal))
+                {
+                    return Json(_targetsStatus, _targetsStatus == HttpStatusCode.OK ? TargetsResponse() : string.Empty);
+                }
+
+                if (uri.AbsolutePath.EndsWith("/projects", StringComparison.Ordinal))
+                {
+                    // The branch-ref listing has one project; the post-delete emptiness check comes back empty.
+                    return uri.Query.Contains("target_reference", StringComparison.Ordinal)
+                        ? Json(HttpStatusCode.OK, Projects("P1"))
+                        : Json(HttpStatusCode.OK, """{"data":[]}""");
+                }
+
+                return Json(HttpStatusCode.OK, """{"data":[]}""");
+            }
+
+            private static Task<HttpResponseMessage> Json(HttpStatusCode status, string json) =>
+                Task.FromResult(new HttpResponseMessage(status)
+                {
+                    Content = new StringContent(json, Encoding.UTF8, "application/json"),
+                });
+        }
+
+        private static SnykProjectCleanupService BuildWith(FailingHandler handler)
+        {
+            var client = SnykApiClientFactory.Create(
+                new StubHttpClientFactory(handler),
+                new SnykOptions { OAuthClientId = "id", OAuthClientSecret = "secret" });
+            return new SnykProjectCleanupService(client, NullLogger<SnykProjectCleanupService>.Instance);
+        }
+
+        [Fact]
+        public async Task ThrowsWhenAProjectDeleteFailsTransiently()
+        {
+            // A 5xx on the delete is potentially transient, so it must surface (not be swallowed) so the
+            // message transport can redeliver rather than leaving the branch's projects orphaned.
+            var service = BuildWith(new FailingHandler(deleteStatus: HttpStatusCode.InternalServerError));
+
+            var ex = await Assert.ThrowsAsync<SnykApiException>(() =>
+                service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None));
+
+            Assert.Equal(500, ex.StatusCode);
+        }
+
+        [Fact]
+        public async Task TreatsAnAlreadyGoneProjectAsDeletedWithoutThrowing()
+        {
+            // A 404 means the project is already gone — the desired end state — so cleanup completes normally
+            // and counts it, rather than retrying a delete that can never succeed.
+            var service = BuildWith(new FailingHandler(deleteStatus: HttpStatusCode.NotFound));
+
+            var deleted = await service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None);
+
+            Assert.Equal(1, deleted);
+        }
+
+        [Fact]
+        public async Task ThrowsWhenTheSnykApiIsUnreachable()
+        {
+            // A DNS/connect failure never produces an HTTP status; it throws from the transport and must
+            // propagate for redelivery, distinct from an already-gone 404.
+            var service = BuildWith(new FailingHandler(deleteThrow: new HttpRequestException("no such host")));
+
+            await Assert.ThrowsAsync<HttpRequestException>(() =>
+                service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None));
+        }
+
+        [Fact]
+        public async Task ThrowsWhenTheTargetListingFailsTransiently()
+        {
+            // A rate-limit on the read path is also retryable; it must not be swallowed as "nothing to clean".
+            var service = BuildWith(new FailingHandler(targetsStatus: HttpStatusCode.TooManyRequests));
+
+            var ex = await Assert.ThrowsAsync<SnykApiException>(() =>
+                service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None));
+
+            Assert.Equal(429, ex.StatusCode);
+        }
+
+        [Fact]
+        public async Task ReturnsZeroWhenTheOrgIsGone()
+        {
+            // A 404 on the read path (e.g. the org no longer exists) is a permanent condition, not transient,
+            // so it is swallowed rather than retried forever.
+            var service = BuildWith(new FailingHandler(targetsStatus: HttpStatusCode.NotFound));
+
+            var deleted = await service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None);
+
+            Assert.Equal(0, deleted);
+        }
+
+        [Fact]
+        public async Task ThrowsWhenTheOAuthTokenExchangeFails()
+        {
+            // A failed token exchange (as opposed to no credentials being configured) is potentially transient,
+            // so it must propagate for redelivery rather than being swallowed as a permanent no-op.
+            var service = BuildWith(new FailingHandler(oauthStatus: HttpStatusCode.InternalServerError));
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None));
         }
     }
 }

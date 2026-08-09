@@ -94,18 +94,37 @@ namespace Snyk.Client
                 ?? throw new SnykApiException($"Snyk returned an empty body for POST {url}.");
         }
 
-        internal async Task<bool> DeleteAsync(string url, CancellationToken cancellationToken)
+        /// <summary>
+        /// Deletes a resource. DELETE is idempotent, so a <c>404</c>/<c>410</c> is treated as success — the
+        /// resource is already absent, which is the desired end state, and retrying would be pointless. Any
+        /// other non-success status throws <see cref="SnykApiException"/> (with its status code) so a
+        /// potentially transient failure (rate-limit, 5xx, auth) surfaces to the caller rather than being
+        /// silently dropped; a transport failure that never reached Snyk (DNS/connect/timeout) already throws
+        /// from <see cref="SendAsync"/> as <see cref="HttpRequestException"/>/<see cref="TaskCanceledException"/>.
+        /// </summary>
+        internal async Task DeleteAsync(string url, CancellationToken cancellationToken)
         {
             using var response = await SendAsync(HttpMethod.Delete, url, content: null, allowRedirect: true, cancellationToken);
-            if (response.IsSuccessStatusCode)
+            if (response.IsSuccessStatusCode
+                || response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Gone)
             {
-                return true;
+                return;
             }
 
             var body = await SafeReadAsync(response, cancellationToken);
+            var (detail, code) = ParseError(body);
+            var requestId = RequestIdOf(response);
+
             _logger.LogWarning("Snyk DELETE {Url} failed ({Status}, request-id {RequestId}): {Body}",
-                url, (int)response.StatusCode, RequestIdOf(response), body);
-            return false;
+                url, (int)response.StatusCode, requestId, body);
+
+            throw new SnykApiException(
+                detail ?? $"Snyk DELETE {url} failed with status {(int)response.StatusCode}.",
+                (int)response.StatusCode,
+                code)
+            {
+                RequestId = requestId,
+            };
         }
 
         /// <summary>
