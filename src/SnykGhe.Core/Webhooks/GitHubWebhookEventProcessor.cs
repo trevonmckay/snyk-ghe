@@ -173,7 +173,9 @@ namespace SnykGhe.Core.Webhooks
         /// Cleans up Snyk when a branch is deleted. Each PR scan publishes a Snyk branch reference (via
         /// <c>snyk monitor --target-reference</c>); GitHub auto-deletes the branch once the PR closes, which
         /// would otherwise leave that reference orphaned. Tag deletions carry the same event but no Snyk
-        /// projects, so they are ignored. Best-effort — a cleanup failure never surfaces to GitHub.
+        /// projects, so they are ignored. A cleanup that hits a retryable failure throws, so the message is
+        /// redelivered by the queue rather than the orphan being silently left behind (the failure never
+        /// surfaces to GitHub either way — the delivery was already acknowledged at the front door).
         /// </summary>
         protected override async ValueTask ProcessDeleteWebhookAsync(
             WebhookHeaders headers,

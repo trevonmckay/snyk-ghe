@@ -132,7 +132,9 @@ namespace Snyk.Client.Resources
             return projects;
         }
 
-        public Task<bool> DeleteAsync(string orgId, string projectId, CancellationToken cancellationToken = default)
+        /// <summary>Deletes a project. Idempotent: a missing project is treated as already deleted. Throws
+        /// <see cref="SnykApiException"/> on a non-404 API failure so the caller can retry.</summary>
+        public Task DeleteAsync(string orgId, string projectId, CancellationToken cancellationToken = default)
         {
             var url = _transport.BuildUrl(
                 $"/orgs/{Uri.EscapeDataString(orgId)}/projects/{Uri.EscapeDataString(projectId)}");
@@ -193,7 +195,9 @@ namespace Snyk.Client.Resources
             return targets;
         }
 
-        public Task<bool> DeleteAsync(string orgId, string targetId, CancellationToken cancellationToken = default)
+        /// <summary>Deletes a target. Idempotent: a missing target is treated as already deleted. Throws
+        /// <see cref="SnykApiException"/> on a non-404 API failure so the caller can retry.</summary>
+        public Task DeleteAsync(string orgId, string targetId, CancellationToken cancellationToken = default)
         {
             var url = _transport.BuildUrl(
                 $"/orgs/{Uri.EscapeDataString(orgId)}/targets/{Uri.EscapeDataString(targetId)}");

@@ -8,8 +8,11 @@ namespace SnykGhe.Core.Snyk
     /// <c>--target-reference=&lt;branch&gt;</c>, which publishes a branch reference under a <c>cli</c>-origin Snyk
     /// target for the repository; once GitHub deletes the branch, that reference is orphaned. This deletes the
     /// projects for a single branch reference across the repository's <c>cli</c> targets, and removes a target
-    /// itself if that reference was its last. Best-effort: every failure (no org mapping, no credentials,
-    /// target/project not found, any API error) is logged and swallowed.
+    /// itself if that reference was its last. A cleanup that has nothing to do (no org mapping, no matching
+    /// target, no matching projects, or no Snyk credentials configured) returns 0 without error, and a
+    /// resource that is already gone (<c>404</c>) is treated as done. Every other failure — rate-limit, 5xx,
+    /// a failed OAuth token exchange, or a transport error such as DNS/timeout — propagates so the caller's
+    /// message transport redelivers rather than silently losing the teardown.
     /// </summary>
     /// <remarks>
     /// Only <c>cli</c>-origin targets are touched. A repository imported through an SCM integration also has a
@@ -49,6 +52,7 @@ namespace SnykGhe.Core.Snyk
                 return 0;
             }
 
+            var deleted = 0;
             try
             {
                 var targetIds = await FindCliTargetIdsAsync(snykOrgId!, remoteRepoUrl, cancellationToken);
@@ -58,7 +62,6 @@ namespace SnykGhe.Core.Snyk
                     return 0;
                 }
 
-                var deleted = 0;
                 foreach (var targetId in targetIds)
                 {
                     var projects = await _client.Projects.ListAsync(
@@ -71,26 +74,23 @@ namespace SnykGhe.Core.Snyk
                         continue;
                     }
 
-                    var deletedHere = 0;
+                    // A delete either succeeds (a 404 counts as success — the project is already gone) or throws
+                    // on a retryable failure, which aborts cleanup so the message is redelivered. Reaching here
+                    // means projects.Count > 0, so any target teardown below runs only after real deletions.
                     foreach (var project in projects)
                     {
-                        if (await _client.Projects.DeleteAsync(snykOrgId!, project.Id, cancellationToken))
-                        {
-                            deleted++;
-                            deletedHere++;
-                        }
+                        await _client.Projects.DeleteAsync(snykOrgId!, project.Id, cancellationToken);
+                        deleted++;
                     }
 
                     // If that was the target's last reference, the target is now an empty shell — remove it too.
                     // When default-branch monitoring is enabled the target keeps its default-branch reference, so
                     // this teardown does not fire for an actively-monitored repo — deleting a feature branch leaves
                     // the durable default-branch snapshot intact, which is the intended behavior.
-                    if (deletedHere > 0 && !await TargetHasProjectsAsync(snykOrgId!, targetId, cancellationToken))
+                    if (!await TargetHasProjectsAsync(snykOrgId!, targetId, cancellationToken))
                     {
-                        if (await _client.Targets.DeleteAsync(snykOrgId!, targetId, cancellationToken))
-                        {
-                            _logger.LogInformation("Removed empty Snyk target {TargetId} for {Repo} after deleting its last branch reference.", targetId, remoteRepoUrl);
-                        }
+                        await _client.Targets.DeleteAsync(snykOrgId!, targetId, cancellationToken);
+                        _logger.LogInformation("Removed empty Snyk target {TargetId} for {Repo} after deleting its last branch reference.", targetId, remoteRepoUrl);
                     }
                 }
 
@@ -105,10 +105,25 @@ namespace SnykGhe.Core.Snyk
 
                 return deleted;
             }
-            catch (Exception ex)
+            catch (SnykApiException ex) when (ex.StatusCode == 404)
             {
-                _logger.LogWarning(ex, "Snyk cleanup for branch {Ref} on {Repo} did not complete.", branchReference, remoteRepoUrl);
-                return 0;
+                // The org, target, or project is already gone — the end state cleanup was aiming for — so there
+                // is nothing to retry. Any other failure (rate-limit, 5xx, or a transport error such as DNS or a
+                // timeout, which carries no status code) is left to propagate so the message is redelivered.
+                _logger.LogInformation(ex,
+                    "Snyk resource already gone (404) while cleaning up branch {Ref} on {Repo}; treating as done.",
+                    branchReference, remoteRepoUrl);
+                return deleted;
+            }
+            catch (SnykCredentialsNotConfiguredException ex)
+            {
+                // A permanent misconfiguration, not a transient fault: retrying can never succeed, so no-op
+                // rather than looping the message to the dead-letter queue. (A failed token exchange, by
+                // contrast, is a plain InvalidOperationException and is left to propagate for redelivery.)
+                _logger.LogWarning(ex,
+                    "Snyk cleanup for branch {Ref} on {Repo} skipped: no Snyk credentials configured.",
+                    branchReference, remoteRepoUrl);
+                return deleted;
             }
         }
 
