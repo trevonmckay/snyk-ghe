@@ -26,6 +26,11 @@ RUN apt-get update \
 RUN curl -fsSL -o /usr/local/bin/snyk https://downloads.snyk.io/cli/stable/snyk-linux \
     && chmod +x /usr/local/bin/snyk
 
+# The SDK image bundles PowerShell (/usr/share/powershell), which this service never invokes but which
+# ships vulnerable transitive assemblies (e.g. System.Security.Cryptography.Xml). Remove it to drop those
+# findings; the SDK toolchain Snyk needs for `dotnet restore` during NuGet scans is unaffected.
+RUN rm -rf /usr/share/powershell
+
 # Ecosystem toolchains: the .NET SDK above covers NuGet. Add others your orgs use, e.g.:
 #   Node/npm:   apt-get install -y nodejs npm
 #   Java/Maven: apt-get install -y default-jdk maven
