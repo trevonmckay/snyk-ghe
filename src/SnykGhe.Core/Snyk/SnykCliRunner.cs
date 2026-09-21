@@ -178,6 +178,16 @@ namespace SnykGhe.Core.Snyk
                 return;
             }
 
+            // `dotnet restore` honours any global.json SDK pin in the cloned repo. When that pins a
+            // feature band newer than the SDK baked into this worker image, restore fails with
+            // "compatible SDK not found" and Snyk cannot resolve the .NET dependency graph. The band
+            // is irrelevant to dependency resolution, so move any global.json aside for the scan and
+            // let restore use the image's installed SDK.
+            if (IsNuGet(ecosystem))
+            {
+                NeutralizeSdkPins(workingDirectory);
+            }
+
             try
             {
                 var result = await Cli.Wrap(command)
@@ -195,6 +205,41 @@ namespace SnykGhe.Core.Snyk
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Dependency restore ({Command}) failed in {Dir}; scanning anyway.", command, workingDirectory);
+            }
+        }
+
+        /// <summary>
+        /// Moves any <c>global.json</c> under <paramref name="workingDirectory"/> aside so
+        /// <c>dotnet restore</c> uses this image's installed SDK instead of failing when the scanned
+        /// repo pins an SDK feature band newer than the image carries. Dependency resolution does not
+        /// depend on the exact band, and the checkout is an ephemeral clone, so the pins are not
+        /// restored. Best-effort: a file that cannot be moved is logged and left in place.
+        /// </summary>
+        private void NeutralizeSdkPins(string workingDirectory)
+        {
+            List<string> pins;
+            try
+            {
+                pins = Directory.EnumerateFiles(workingDirectory, "global.json", SearchOption.AllDirectories).ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not scan for global.json under {Dir}; restore will honour any SDK pin.", workingDirectory);
+                return;
+            }
+
+            foreach (var pin in pins)
+            {
+                try
+                {
+                    File.Move(pin, pin + ".snyk-disabled", overwrite: true);
+                    _logger.LogInformation(
+                        "Moved {Path} aside so dotnet restore uses the image SDK regardless of the pinned band.", pin);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not move {Path} aside; restore may fail if it pins a newer SDK.", pin);
+                }
             }
         }
 
