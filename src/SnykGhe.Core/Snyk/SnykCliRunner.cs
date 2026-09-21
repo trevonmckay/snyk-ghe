@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using CliWrap;
 using CliWrap.Buffered;
 using Microsoft.Extensions.Options;
@@ -178,6 +180,14 @@ namespace SnykGhe.Core.Snyk
                 return;
             }
 
+            // `dotnet restore` honours any global.json SDK pin in the cloned repo. When that pins a
+            // feature band newer than the SDK baked into this worker image, restore fails with
+            // "compatible SDK not found" and Snyk cannot resolve the .NET dependency graph. The band
+            // is irrelevant to dependency resolution, so drop the `sdk` pin from any global.json for
+            // the scan and let restore use the image's installed SDK. (Reached only for nuget: the
+            // switch above returns an empty command for every other ecosystem.)
+            NeutralizeSdkPins(workingDirectory);
+
             try
             {
                 var result = await Cli.Wrap(command)
@@ -195,6 +205,89 @@ namespace SnykGhe.Core.Snyk
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Dependency restore ({Command}) failed in {Dir}; scanning anyway.", command, workingDirectory);
+            }
+        }
+
+        /// <summary>
+        /// Strips the <c>sdk</c> pin from every <c>global.json</c> under
+        /// <paramref name="workingDirectory"/> so <c>dotnet restore</c> uses this image's installed SDK
+        /// instead of failing when the scanned repo pins an SDK feature band newer than the image
+        /// carries. Only the <c>sdk</c> section is removed; other settings (such as <c>msbuild-sdks</c>,
+        /// which restore does need to resolve MSBuild project SDKs) are preserved. Dependency
+        /// resolution does not depend on the exact band, and the checkout is an ephemeral clone, so the
+        /// edit is not undone. Best-effort: a file that cannot be read or rewritten is logged and left
+        /// in place.
+        /// </summary>
+        private void NeutralizeSdkPins(string workingDirectory)
+        {
+            IEnumerator<string> pins;
+            try
+            {
+                pins = Directory.EnumerateFiles(workingDirectory, "global.json", SearchOption.AllDirectories)
+                    .GetEnumerator();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not scan for global.json under {Dir}; restore will honour any SDK pin.", workingDirectory);
+                return;
+            }
+
+            // Enumerate defensively: the AllDirectories walk is lazy and can throw partway through on an
+            // unreadable subdirectory. Neutralize every pin we reach rather than abandoning the ones
+            // already found.
+            using (pins)
+            {
+                while (true)
+                {
+                    string pin;
+                    try
+                    {
+                        if (!pins.MoveNext())
+                        {
+                            break;
+                        }
+
+                        pin = pins.Current;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Stopped scanning for global.json under {Dir}; any pins past this point remain.", workingDirectory);
+                        break;
+                    }
+
+                    NeutralizeSdkPin(pin);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Removes the <c>sdk</c> section from a single <c>global.json</c>, leaving the rest of the file
+        /// intact. A file with no <c>sdk</c> section, or one that cannot be parsed or rewritten, is left
+        /// as-is.
+        /// </summary>
+        private void NeutralizeSdkPin(string pin)
+        {
+            try
+            {
+                var documentOptions = new JsonDocumentOptions
+                {
+                    CommentHandling = JsonCommentHandling.Skip,
+                    AllowTrailingCommas = true,
+                };
+
+                if (JsonNode.Parse(File.ReadAllText(pin), documentOptions: documentOptions) is not JsonObject root
+                    || !root.Remove("sdk"))
+                {
+                    return;
+                }
+
+                File.WriteAllText(pin, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+                _logger.LogInformation(
+                    "Dropped the SDK pin from {Path} so dotnet restore uses the image SDK; other settings kept.", pin);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not drop the SDK pin from {Path}; restore may fail if it pins a newer SDK.", pin);
             }
         }
 
