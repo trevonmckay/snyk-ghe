@@ -297,6 +297,7 @@ namespace SnykGhe.Core.Tests
             private readonly Exception? _bulkThrow;
             private readonly string? _bulkFailReason;
             private readonly bool _bulkOmits;
+            private readonly bool _bulkNoMeta;
             private readonly HttpStatusCode? _deleteStatus;
             private readonly HttpStatusCode _targetsStatus;
             private readonly HttpStatusCode _oauthStatus;
@@ -306,6 +307,7 @@ namespace SnykGhe.Core.Tests
                 Exception? bulkThrow = null,
                 string? bulkFailReason = null,
                 bool bulkOmits = false,
+                bool bulkNoMeta = false,
                 HttpStatusCode? deleteStatus = null,
                 HttpStatusCode targetsStatus = HttpStatusCode.OK,
                 HttpStatusCode oauthStatus = HttpStatusCode.OK)
@@ -314,6 +316,7 @@ namespace SnykGhe.Core.Tests
                 _bulkThrow = bulkThrow;
                 _bulkFailReason = bulkFailReason;
                 _bulkOmits = bulkOmits;
+                _bulkNoMeta = bulkNoMeta;
                 _deleteStatus = deleteStatus;
                 _targetsStatus = targetsStatus;
                 _oauthStatus = oauthStatus;
@@ -343,6 +346,11 @@ namespace SnykGhe.Core.Tests
                     if (_bulkStatus != HttpStatusCode.OK)
                     {
                         return Json(_bulkStatus, string.Empty);
+                    }
+
+                    if (_bulkNoMeta)
+                    {
+                        return Json(HttpStatusCode.OK, """{"jsonapi":{"version":"1.0"}}""");
                     }
 
                     var ids = await BulkDeleteFixtures.RequestedIds(request, cancellationToken);
@@ -420,6 +428,22 @@ namespace SnykGhe.Core.Tests
             // A project missing from both result lists is not trusted to be gone: it goes through the
             // single-project delete, so one Snyk failed to resolve is still removed rather than orphaned.
             var handler = new FailingHandler(bulkOmits: true);
+            var service = BuildWith(handler);
+
+            var deleted = await service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None);
+
+            Assert.Equal(1, deleted);
+            Assert.Contains(handler.Requests, r =>
+                r.Method == HttpMethod.Delete && r.RequestUri!.AbsolutePath.EndsWith("/projects/P1", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public async Task DeletesIndividuallyWhenTheBulkResponseHasNoMetaSummary()
+        {
+            // A success response without the result summary may follow a delete Snyk already performed. Throwing
+            // would redeliver into a listing that no longer finds the projects, skipping the target teardown, so
+            // each project is instead confirmed through the single-project delete.
+            var handler = new FailingHandler(bulkNoMeta: true);
             var service = BuildWith(handler);
 
             var deleted = await service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None);

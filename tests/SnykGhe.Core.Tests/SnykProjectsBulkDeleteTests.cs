@@ -134,15 +134,70 @@ namespace SnykGhe.Core.Tests
             Assert.Equal(500, ex.StatusCode);
         }
 
-        [Fact]
-        public async Task ThrowsWhenASuccessResponseHasNoMetaSummary()
+        [Theory]
+        [InlineData("[]")]
+        [InlineData("\"boom\"")]
+        [InlineData("""{"errors":["boom"]}""")]
+        public async Task ThrowsWithTheStatusCodeWhenARejectionBodyIsNotJsonApiErrors(string body)
         {
-            // A 2xx without the required meta summary leaves the batch's outcome unknown; the client must not
-            // silently report it as deleting nothing.
-            var handler = new BulkDeleteHandler(_ => Json(HttpStatusCode.OK, """{"jsonapi":{"version":"1.0"}}"""));
+            // The status code is what callers branch on (a 404 falls back, a 5xx redelivers), so an error body of
+            // an unexpected shape must still surface as SnykApiException rather than a parsing exception.
+            var handler = new BulkDeleteHandler(_ => Json(HttpStatusCode.NotFound, body));
 
-            await Assert.ThrowsAsync<SnykApiException>(() =>
+            var ex = await Assert.ThrowsAsync<SnykApiException>(() =>
                 Client(handler).Projects.BulkDeleteAsync(OrgId, ["P1"], CancellationToken.None));
+
+            Assert.Equal(404, ex.StatusCode);
+        }
+
+        [Theory]
+        [InlineData("[]")]
+        [InlineData("""{"errors":["boom"]}""")]
+        public async Task ThrowsWithTheStatusCodeWhenADeleteRejectionBodyIsNotJsonApiErrors(string body)
+        {
+            var handler = new BulkDeleteHandler(_ => Json(HttpStatusCode.InternalServerError, body));
+
+            var ex = await Assert.ThrowsAsync<SnykApiException>(() =>
+                Client(handler).Projects.DeleteAsync(OrgId, "P1", CancellationToken.None));
+
+            Assert.Equal(500, ex.StatusCode);
+        }
+
+        [Fact]
+        public async Task ReportsABatchWithoutAMetaSummaryAsUnreported()
+        {
+            // A 2xx without the required meta summary leaves the batch's outcome unknown. Snyk may already have
+            // deleted it, so the client neither throws nor reports it as deleted or failed: its ids come back as
+            // unreported for the caller to verify, while other batches are still aggregated.
+            var ids = Enumerable.Range(1, 150).Select(i => $"P{i}").ToList();
+            var handler = new BulkDeleteHandler(call => call == 1
+                ? Json(HttpStatusCode.OK, """{"jsonapi":{"version":"1.0"}}""")
+                : Json(HttpStatusCode.OK, BulkDeleteFixtures.Summary(ids.Skip(100).ToArray())));
+
+            var result = await Client(handler).Projects.BulkDeleteAsync(OrgId, ids, CancellationToken.None);
+
+            Assert.Equal(ids.Take(100), result.Unreported);
+            Assert.Equal(ids.Skip(100), result.Deleted.Select(project => project.Id));
+            Assert.Empty(result.Failed);
+        }
+
+        [Theory]
+        [InlineData(HttpStatusCode.NoContent, "")]
+        [InlineData(HttpStatusCode.OK, "")]
+        [InlineData(HttpStatusCode.OK, "[]")]
+        [InlineData(HttpStatusCode.OK, "\"deleted\"")]
+        [InlineData(HttpStatusCode.OK, "not json")]
+        [InlineData(HttpStatusCode.OK, """{"meta":[]}""")]
+        public async Task ReportsASuccessResponseWithoutAReadableSummaryAsUnreported(HttpStatusCode status, string body)
+        {
+            // Any 2xx whose outcome cannot be read may still follow a completed delete, so it must not throw.
+            var handler = new BulkDeleteHandler(_ => Json(status, body));
+
+            var result = await Client(handler).Projects.BulkDeleteAsync(OrgId, ["P1", "P2"], CancellationToken.None);
+
+            Assert.Equal(["P1", "P2"], result.Unreported);
+            Assert.Empty(result.Deleted);
+            Assert.Empty(result.Failed);
         }
 
         [Fact]

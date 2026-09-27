@@ -126,8 +126,8 @@ namespace SnykGhe.Core.Snyk
 
         /// <summary>
         /// Deletes <paramref name="projectIds"/> through Snyk's bulk-delete endpoint, then reconciles every id the
-        /// response did not confirm as deleted — one reported as failed, or one absent from both result lists
-        /// (Snyk ignores an id it does not find) — through the single-project delete, which treats a 404 as
+        /// response did not confirm as deleted — one reported as failed, one absent from both result lists
+        /// (Snyk ignores an id it does not find), or one whose batch response carried no result summary — through the single-project delete, which treats a 404 as
         /// already gone and throws on any other failure. Returns the number of projects deleted or confirmed gone.
         /// </summary>
         /// <remarks>
@@ -152,7 +152,14 @@ namespace SnykGhe.Core.Snyk
                 _logger.LogWarning(ex,
                     "Snyk bulk-delete is unavailable (404); deleting {Count} project(s) individually for branch {Ref} on {Repo}.",
                     projectIds.Count, branchReference, remoteRepoUrl);
-                result = new SnykBulkDeleteResult { Deleted = [], Failed = [] };
+                result = new SnykBulkDeleteResult { Deleted = [], Failed = [], Unreported = [] };
+            }
+
+            if (result.Unreported.Count > 0)
+            {
+                _logger.LogWarning(
+                    "Snyk bulk-delete returned no result summary for {Count} project(s) for branch {Ref} on {Repo}; confirming each individually.",
+                    result.Unreported.Count, branchReference, remoteRepoUrl);
             }
 
             foreach (var failure in result.Failed)
