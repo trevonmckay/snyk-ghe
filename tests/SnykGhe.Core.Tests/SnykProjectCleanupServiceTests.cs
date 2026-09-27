@@ -20,8 +20,10 @@ namespace SnykGhe.Core.Tests
 
         /// <summary>
         /// Routes by method + path so one handler can serve the OAuth exchange, the target lookup, the
-        /// project list for the branch, the post-delete emptiness check, and the DELETE calls. The two GET
-        /// /projects calls are told apart by the presence of the <c>target_reference</c> filter.
+        /// project list for the branch, the post-delete emptiness check, the bulk-delete POST, and any
+        /// fallback DELETE. The two GET /projects calls are told apart by the presence of the
+        /// <c>target_reference</c> filter. Each bulk-delete request echoes the project ids it was sent back
+        /// as deleted, and records the ids in <see cref="BulkBatches"/> so a test can assert the payload.
         /// </summary>
         private sealed class RoutingHandler : HttpMessageHandler
         {
@@ -38,7 +40,10 @@ namespace SnykGhe.Core.Tests
 
             public List<HttpRequestMessage> Requests { get; } = [];
 
-            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            /// <summary>The project ids sent to each bulk-delete request, in call order.</summary>
+            public List<IReadOnlyList<string>> BulkBatches { get; } = [];
+
+            protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
                 Requests.Add(request);
                 var uri = request.RequestUri!;
@@ -48,9 +53,16 @@ namespace SnykGhe.Core.Tests
                     return Ok("""{"access_token":"tok-123","expires_in":3600}""");
                 }
 
+                if (uri.AbsolutePath.EndsWith("/bulk-delete", StringComparison.Ordinal))
+                {
+                    var ids = await BulkDeleteFixtures.RequestedIds(request, cancellationToken);
+                    BulkBatches.Add(ids);
+                    return Ok(BulkDeleteFixtures.Summary(deleted: ids));
+                }
+
                 if (request.Method == HttpMethod.Delete)
                 {
-                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NoContent));
+                    return new HttpResponseMessage(HttpStatusCode.NoContent);
                 }
 
                 if (uri.AbsolutePath.EndsWith("/targets", StringComparison.Ordinal))
@@ -72,11 +84,8 @@ namespace SnykGhe.Core.Tests
                 return Ok("""{"data":[]}""");
             }
 
-            private static Task<HttpResponseMessage> Ok(string json) =>
-                Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent(json, Encoding.UTF8, "application/json"),
-                });
+            private static HttpResponseMessage Ok(string json) =>
+                new(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
         }
 
         private sealed class StubHttpClientFactory : IHttpClientFactory
@@ -134,7 +143,10 @@ namespace SnykGhe.Core.Tests
             var deleted = await service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None);
 
             Assert.Equal(2, deleted);
-            Assert.Equal(2, Deletes(handler, "/projects/").Count());
+            // One bulk request carries both branch projects — no per-project DELETE, no target teardown.
+            var batch = Assert.Single(handler.BulkBatches);
+            Assert.Equal(new[] { "P1", "P2" }, batch);
+            Assert.Empty(Deletes(handler, "/projects/"));
             Assert.Empty(Deletes(handler, "/targets/"));
 
             var listByRef = handler.Requests.Single(r =>
@@ -195,7 +207,8 @@ namespace SnykGhe.Core.Tests
             var deleted = await service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None);
 
             Assert.Equal(2, deleted);
-            Assert.Equal(2, Deletes(handler, "/projects/").Count());
+            // Each cli target's branch project is torn down by its own bulk request.
+            Assert.Equal(2, handler.BulkBatches.Count);
 
             var refListings = handler.Requests.Where(r =>
                 r.Method == HttpMethod.Get &&
@@ -209,15 +222,19 @@ namespace SnykGhe.Core.Tests
         [Fact]
         public async Task FollowsPaginationToCollectEveryProject()
         {
+            // Snyk's next link preserves the original query, including target_reference, so the continuation
+            // is still recognized as the branch-ref listing.
             var page1 = "{\"data\":[{\"id\":\"P1\",\"type\":\"project\"}]," +
-                "\"links\":{\"next\":\"/rest/orgs/" + OrgId + "/projects?version=2024-10-15&starting_after=cursor2\"}}";
+                "\"links\":{\"next\":\"/rest/orgs/" + OrgId + "/projects?version=2024-10-15&target_reference=fix%2Fsnyk-open-source-vulns&starting_after=cursor2\"}}";
             var page2 = Projects("P2");
             var (service, handler) = Build(TargetsResponse(), new[] { page1, page2 }, remainingJson: Projects("MAIN"));
 
             var deleted = await service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None);
 
             Assert.Equal(2, deleted);
-            Assert.Equal(2, Deletes(handler, "/projects/").Count());
+            // Both pages are collected before deletion, then removed in a single bulk request.
+            var batch = Assert.Single(handler.BulkBatches);
+            Assert.Equal(new[] { "P1", "P2" }, batch);
         }
 
         [Fact]
@@ -266,32 +283,50 @@ namespace SnykGhe.Core.Tests
         }
 
         /// <summary>
-        /// Serves the happy-path OAuth/targets/projects responses but lets a test inject a failure: an HTTP
-        /// status on the project DELETE, an HTTP status on the targets listing, or a transport-level throw on
-        /// the DELETE (an <see cref="HttpRequestException"/> standing in for a DNS/connect failure that never
-        /// reached Snyk). Confirms a transient failure surfaces while an already-gone (404) resource does not.
+        /// Serves the happy-path OAuth/targets/projects responses but lets a test inject a failure on the
+        /// delete path: an HTTP status on the bulk-delete POST, a transport-level throw on it (an
+        /// <see cref="HttpRequestException"/> standing in for a DNS/connect failure that never reached Snyk),
+        /// a bulk response that reports the project as failed or leaves it out of both result lists (Snyk's
+        /// answer for a project it does not find), an HTTP status on the single-project DELETE the service
+        /// then falls back to, or an HTTP status on the targets listing. Confirms a transient failure surfaces
+        /// while an already-gone (404) resource does not.
         /// </summary>
         private sealed class FailingHandler : HttpMessageHandler
         {
+            private readonly HttpStatusCode _bulkStatus;
+            private readonly Exception? _bulkThrow;
+            private readonly string? _bulkFailReason;
+            private readonly bool _bulkOmits;
+            private readonly bool _bulkNoMeta;
             private readonly HttpStatusCode? _deleteStatus;
-            private readonly Exception? _deleteThrow;
             private readonly HttpStatusCode _targetsStatus;
             private readonly HttpStatusCode _oauthStatus;
 
             public FailingHandler(
+                HttpStatusCode bulkStatus = HttpStatusCode.OK,
+                Exception? bulkThrow = null,
+                string? bulkFailReason = null,
+                bool bulkOmits = false,
+                bool bulkNoMeta = false,
                 HttpStatusCode? deleteStatus = null,
-                Exception? deleteThrow = null,
                 HttpStatusCode targetsStatus = HttpStatusCode.OK,
                 HttpStatusCode oauthStatus = HttpStatusCode.OK)
             {
+                _bulkStatus = bulkStatus;
+                _bulkThrow = bulkThrow;
+                _bulkFailReason = bulkFailReason;
+                _bulkOmits = bulkOmits;
+                _bulkNoMeta = bulkNoMeta;
                 _deleteStatus = deleteStatus;
-                _deleteThrow = deleteThrow;
                 _targetsStatus = targetsStatus;
                 _oauthStatus = oauthStatus;
             }
 
-            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            public List<HttpRequestMessage> Requests { get; } = [];
+
+            protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
+                Requests.Add(request);
                 var uri = request.RequestUri!;
 
                 if (uri.AbsoluteUri.Contains("/oauth2/token"))
@@ -301,13 +336,34 @@ namespace SnykGhe.Core.Tests
                         : string.Empty);
                 }
 
-                if (request.Method == HttpMethod.Delete)
+                if (uri.AbsolutePath.EndsWith("/bulk-delete", StringComparison.Ordinal))
                 {
-                    if (_deleteThrow is not null)
+                    if (_bulkThrow is not null)
                     {
-                        throw _deleteThrow;
+                        throw _bulkThrow;
                     }
 
+                    if (_bulkStatus != HttpStatusCode.OK)
+                    {
+                        return Json(_bulkStatus, string.Empty);
+                    }
+
+                    if (_bulkNoMeta)
+                    {
+                        return Json(HttpStatusCode.OK, """{"jsonapi":{"version":"1.0"}}""");
+                    }
+
+                    var ids = await BulkDeleteFixtures.RequestedIds(request, cancellationToken);
+                    var summary = _bulkOmits
+                        ? BulkDeleteFixtures.Summary()
+                        : _bulkFailReason is null
+                            ? BulkDeleteFixtures.Summary(deleted: ids)
+                            : BulkDeleteFixtures.Summary(failed: ids.Select(id => (id, _bulkFailReason)));
+                    return Json(HttpStatusCode.OK, summary);
+                }
+
+                if (request.Method == HttpMethod.Delete)
+                {
                     return Json(_deleteStatus ?? HttpStatusCode.NoContent, string.Empty);
                 }
 
@@ -327,11 +383,8 @@ namespace SnykGhe.Core.Tests
                 return Json(HttpStatusCode.OK, """{"data":[]}""");
             }
 
-            private static Task<HttpResponseMessage> Json(HttpStatusCode status, string json) =>
-                Task.FromResult(new HttpResponseMessage(status)
-                {
-                    Content = new StringContent(json, Encoding.UTF8, "application/json"),
-                });
+            private static HttpResponseMessage Json(HttpStatusCode status, string json) =>
+                new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
         }
 
         private static SnykProjectCleanupService BuildWith(FailingHandler handler)
@@ -343,11 +396,11 @@ namespace SnykGhe.Core.Tests
         }
 
         [Fact]
-        public async Task ThrowsWhenAProjectDeleteFailsTransiently()
+        public async Task ThrowsWhenTheBulkDeleteFailsTransiently()
         {
-            // A 5xx on the delete is potentially transient, so it must surface (not be swallowed) so the
+            // A 5xx on the bulk delete is potentially transient, so it must surface (not be swallowed) so the
             // message transport can redeliver rather than leaving the branch's projects orphaned.
-            var service = BuildWith(new FailingHandler(deleteStatus: HttpStatusCode.InternalServerError));
+            var service = BuildWith(new FailingHandler(bulkStatus: HttpStatusCode.InternalServerError));
 
             var ex = await Assert.ThrowsAsync<SnykApiException>(() =>
                 service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None));
@@ -358,9 +411,11 @@ namespace SnykGhe.Core.Tests
         [Fact]
         public async Task TreatsAnAlreadyGoneProjectAsDeletedWithoutThrowing()
         {
-            // A 404 means the project is already gone — the desired end state — so cleanup completes normally
-            // and counts it, rather than retrying a delete that can never succeed.
-            var service = BuildWith(new FailingHandler(deleteStatus: HttpStatusCode.NotFound));
+            // Snyk's bulk delete ignores a project it does not find, leaving it out of both result lists. The
+            // service confirms it with the single-project delete, whose 404 means already gone — the desired end
+            // state — so cleanup completes normally and counts it, rather than retrying a delete that can never
+            // succeed.
+            var service = BuildWith(new FailingHandler(bulkOmits: true, deleteStatus: HttpStatusCode.NotFound));
 
             var deleted = await service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None);
 
@@ -368,11 +423,72 @@ namespace SnykGhe.Core.Tests
         }
 
         [Fact]
+        public async Task DeletesAProjectTheBulkResponseLeftUnaccountedFor()
+        {
+            // A project missing from both result lists is not trusted to be gone: it goes through the
+            // single-project delete, so one Snyk failed to resolve is still removed rather than orphaned.
+            var handler = new FailingHandler(bulkOmits: true);
+            var service = BuildWith(handler);
+
+            var deleted = await service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None);
+
+            Assert.Equal(1, deleted);
+            Assert.Contains(handler.Requests, r =>
+                r.Method == HttpMethod.Delete && r.RequestUri!.AbsolutePath.EndsWith("/projects/P1", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public async Task DeletesIndividuallyWhenTheBulkResponseHasNoMetaSummary()
+        {
+            // A success response without the result summary may follow a delete Snyk already performed. Throwing
+            // would redeliver into a listing that no longer finds the projects, skipping the target teardown, so
+            // each project is instead confirmed through the single-project delete.
+            var handler = new FailingHandler(bulkNoMeta: true);
+            var service = BuildWith(handler);
+
+            var deleted = await service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None);
+
+            Assert.Equal(1, deleted);
+            Assert.Contains(handler.Requests, r =>
+                r.Method == HttpMethod.Delete && r.RequestUri!.AbsolutePath.EndsWith("/projects/P1", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public async Task FallsBackToIndividualDeletesWhenBulkDeleteIsUnavailable()
+        {
+            // The org was just resolved by the target lookup, so a 404 from the bulk endpoint means it is not
+            // served (an API version that predates it, or a region without it) — not that the projects are gone.
+            // Cleanup must still delete them rather than completing as a no-op.
+            var handler = new FailingHandler(bulkStatus: HttpStatusCode.NotFound);
+            var service = BuildWith(handler);
+
+            var deleted = await service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None);
+
+            Assert.Equal(1, deleted);
+            Assert.Contains(handler.Requests, r =>
+                r.Method == HttpMethod.Delete && r.RequestUri!.AbsolutePath.EndsWith("/projects/P1", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public async Task ThrowsWhenTheFallbackDeleteFailsTransiently()
+        {
+            // A project the bulk endpoint reports as failed is retried with a single DELETE; a 5xx there is
+            // transient and must surface so the message redelivers, not be swallowed.
+            var service = BuildWith(new FailingHandler(
+                bulkFailReason: "delete_failed", deleteStatus: HttpStatusCode.InternalServerError));
+
+            var ex = await Assert.ThrowsAsync<SnykApiException>(() =>
+                service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None));
+
+            Assert.Equal(500, ex.StatusCode);
+        }
+
+        [Fact]
         public async Task ThrowsWhenTheSnykApiIsUnreachable()
         {
             // A DNS/connect failure never produces an HTTP status; it throws from the transport and must
             // propagate for redelivery, distinct from an already-gone 404.
-            var service = BuildWith(new FailingHandler(deleteThrow: new HttpRequestException("no such host")));
+            var service = BuildWith(new FailingHandler(bulkThrow: new HttpRequestException("no such host")));
 
             await Assert.ThrowsAsync<HttpRequestException>(() =>
                 service.DeleteBranchProjectsAsync(OrgId, RepoUrl, Branch, CancellationToken.None));

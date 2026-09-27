@@ -85,13 +85,22 @@ namespace Snyk.Client
 
         internal async Task<JsonDocument> PostAsync(string url, string body, CancellationToken cancellationToken)
         {
+            return await PostOrEmptyAsync(url, body, cancellationToken)
+                ?? throw new SnykApiException($"Snyk returned an empty body for POST {url}.");
+        }
+
+        /// <summary>
+        /// As <see cref="PostAsync"/>, but a success response with an empty body returns null instead of throwing.
+        /// A non-empty body that is not valid JSON still throws <see cref="JsonException"/>.
+        /// </summary>
+        internal async Task<JsonDocument?> PostOrEmptyAsync(string url, string body, CancellationToken cancellationToken)
+        {
             using var content = new StringContent(body, Encoding.UTF8);
             content.Headers.ContentType = new MediaTypeHeaderValue(JsonApiMediaType);
 
             using var response = await SendAsync(HttpMethod.Post, url, content, allowRedirect: true, cancellationToken);
             await EnsureSuccessAsync(response, url, cancellationToken);
-            return await ReadJsonAsync(response, cancellationToken)
-                ?? throw new SnykApiException($"Snyk returned an empty body for POST {url}.");
+            return await ReadJsonAsync(response, cancellationToken);
         }
 
         /// <summary>
@@ -294,7 +303,10 @@ namespace Snyk.Client
             }
         }
 
-        /// <summary>Pulls the first entry out of a JSON:API <c>errors</c> array, tolerating a non-JSON body.</summary>
+        /// <summary>
+        /// Pulls the first entry out of a JSON:API <c>errors</c> array, tolerating a body that is not JSON or not
+        /// shaped as JSON:API errors, so a failed request always surfaces as <see cref="SnykApiException"/>.
+        /// </summary>
         internal static (string? Detail, string? Code) ParseError(string body)
         {
             if (string.IsNullOrWhiteSpace(body))
@@ -305,9 +317,11 @@ namespace Snyk.Client
             try
             {
                 using var doc = JsonDocument.Parse(body);
-                if (!doc.RootElement.TryGetProperty("errors", out var errors)
+                if (doc.RootElement.ValueKind != JsonValueKind.Object
+                    || !doc.RootElement.TryGetProperty("errors", out var errors)
                     || errors.ValueKind != JsonValueKind.Array
-                    || errors.GetArrayLength() == 0)
+                    || errors.GetArrayLength() == 0
+                    || errors[0].ValueKind != JsonValueKind.Object)
                 {
                     return (null, null);
                 }

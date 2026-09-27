@@ -74,14 +74,11 @@ namespace SnykGhe.Core.Snyk
                         continue;
                     }
 
-                    // A delete either succeeds (a 404 counts as success — the project is already gone) or throws
-                    // on a retryable failure, which aborts cleanup so the message is redelivered. Reaching here
-                    // means projects.Count > 0, so any target teardown below runs only after real deletions.
-                    foreach (var project in projects)
-                    {
-                        await _client.Projects.DeleteAsync(snykOrgId!, project.Id, cancellationToken);
-                        deleted++;
-                    }
+                    // Either every project is deleted (or confirmed already gone) or this throws, aborting cleanup
+                    // so the message is redelivered. Reaching here means projects.Count > 0, so any target
+                    // teardown below runs only after real deletions.
+                    var projectIds = projects.Select(project => project.Id).ToList();
+                    deleted += await DeleteProjectsAsync(snykOrgId!, projectIds, branchReference, remoteRepoUrl, cancellationToken);
 
                     // If that was the target's last reference, the target is now an empty shell — remove it too.
                     // When default-branch monitoring is enabled the target keeps its default-branch reference, so
@@ -125,6 +122,68 @@ namespace SnykGhe.Core.Snyk
                     branchReference, remoteRepoUrl);
                 return deleted;
             }
+        }
+
+        /// <summary>
+        /// Deletes <paramref name="projectIds"/> through Snyk's bulk-delete endpoint, then reconciles every id the
+        /// response did not confirm as deleted — one reported as failed, one absent from both result lists
+        /// (Snyk ignores an id it does not find), or one whose batch response carried no result summary — through the single-project delete, which treats a 404 as
+        /// already gone and throws on any other failure. Returns the number of projects deleted or confirmed gone.
+        /// </summary>
+        /// <remarks>
+        /// A 404 from the bulk endpoint does not mean the projects are gone: the org was just resolved by the
+        /// target lookup, so it indicates the endpoint is not served (an API version that predates it, or a
+        /// region without it). Every project then goes through the single-project delete instead.
+        /// </remarks>
+        private async Task<int> DeleteProjectsAsync(
+            string orgId,
+            IReadOnlyList<string> projectIds,
+            string branchReference,
+            string remoteRepoUrl,
+            CancellationToken cancellationToken)
+        {
+            SnykBulkDeleteResult result;
+            try
+            {
+                result = await _client.Projects.BulkDeleteAsync(orgId, projectIds, cancellationToken);
+            }
+            catch (SnykApiException ex) when (ex.StatusCode == 404)
+            {
+                _logger.LogWarning(ex,
+                    "Snyk bulk-delete is unavailable (404); deleting {Count} project(s) individually for branch {Ref} on {Repo}.",
+                    projectIds.Count, branchReference, remoteRepoUrl);
+                result = new SnykBulkDeleteResult { Deleted = [], Failed = [], Unreported = [] };
+            }
+
+            if (result.Unreported.Count > 0)
+            {
+                _logger.LogWarning(
+                    "Snyk bulk-delete returned no result summary for {Count} project(s) for branch {Ref} on {Repo}; confirming each individually.",
+                    result.Unreported.Count, branchReference, remoteRepoUrl);
+            }
+
+            foreach (var failure in result.Failed)
+            {
+                _logger.LogWarning(
+                    "Bulk delete did not remove Snyk project {ProjectId} ({Reason}) for branch {Ref} on {Repo}; retrying individually.",
+                    failure.Id, failure.Reason, branchReference, remoteRepoUrl);
+            }
+
+            var confirmed = result.Deleted.Select(project => project.Id).ToHashSet(StringComparer.Ordinal);
+            var deleted = projectIds.Count(confirmed.Contains);
+
+            foreach (var projectId in projectIds)
+            {
+                if (confirmed.Contains(projectId))
+                {
+                    continue;
+                }
+
+                await _client.Projects.DeleteAsync(orgId, projectId, cancellationToken);
+                deleted++;
+            }
+
+            return deleted;
         }
 
         /// <summary>

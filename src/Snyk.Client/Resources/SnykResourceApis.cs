@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Snyk.Client.Resources
 {
@@ -24,6 +25,43 @@ namespace Snyk.Client.Resources
 
         /// <summary>Reference (typically a branch) grouping this project's snapshots.</summary>
         public string? TargetReference { get; init; }
+    }
+
+    /// <summary>A project a bulk-delete request removed.</summary>
+    public sealed class SnykBulkDeletedProject
+    {
+        public required string Id { get; init; }
+
+        public string? Name { get; init; }
+    }
+
+    /// <summary>A project a bulk-delete request did not remove, with the reason Snyk gave.</summary>
+    public sealed class SnykBulkDeleteFailure
+    {
+        public required string Id { get; init; }
+
+        public string? Name { get; init; }
+
+        /// <summary>
+        /// Snyk's reason code. Known values: <c>delete_failed</c> (the project itself could not be deleted),
+        /// <c>exclusion_failed</c> and <c>exclusion_limit_reached</c> (only when the request asked to exclude
+        /// the project's file from future scans). Left as the raw string so a reason added later is not lost.
+        /// </summary>
+        public string? Reason { get; init; }
+    }
+
+    /// <summary>The outcome of a bulk-delete request: the projects removed and those that were not.</summary>
+    public sealed class SnykBulkDeleteResult
+    {
+        public required IReadOnlyList<SnykBulkDeletedProject> Deleted { get; init; }
+
+        public required IReadOnlyList<SnykBulkDeleteFailure> Failed { get; init; }
+
+        /// <summary>
+        /// Requested project ids whose batch returned a success response without the <c>meta</c> summary, so
+        /// whether Snyk deleted them is unknown. They appear in neither <see cref="Deleted"/> nor <see cref="Failed"/>.
+        /// </summary>
+        public required IReadOnlyList<string> Unreported { get; init; }
     }
 
     /// <summary>A Snyk target: a repository or image that projects hang off.</summary>
@@ -139,6 +177,110 @@ namespace Snyk.Client.Resources
             var url = _transport.BuildUrl(
                 $"/orgs/{Uri.EscapeDataString(orgId)}/projects/{Uri.EscapeDataString(projectId)}");
             return _transport.DeleteAsync(url, cancellationToken);
+        }
+
+        /// <summary>The Snyk bulk-delete endpoint accepts at most this many projects per request.</summary>
+        private const int BulkDeleteBatchSize = 100;
+
+        /// <summary>
+        /// Deletes projects in bulk, batching into requests of at most 100 (the endpoint's per-request cap) and
+        /// aggregating the outcomes. Unlike <see cref="DeleteAsync"/>, a project the endpoint could not delete is
+        /// reported in <see cref="SnykBulkDeleteResult.Failed"/> rather than raising — the request as a whole
+        /// still succeeds — so the caller decides how to treat a partial failure. A project that does not exist
+        /// in the org is ignored by Snyk and appears in neither list. A request the API rejects outright (any
+        /// non-2xx, e.g. a 404 for a missing org or an API version that predates the endpoint, a 429, or a 5xx)
+        /// still throws <see cref="SnykApiException"/>. A 2xx without a readable <c>meta</c> summary (an empty body, a
+        /// body that is not a JSON object, or an object without <c>meta</c>) does not throw — Snyk may already have
+        /// deleted the batch — and its ids are reported in <see cref="SnykBulkDeleteResult.Unreported"/>.
+        /// An empty <paramref name="projectIds"/> makes no request.
+        /// </summary>
+        public async Task<SnykBulkDeleteResult> BulkDeleteAsync(
+            string orgId,
+            IReadOnlyCollection<string> projectIds,
+            CancellationToken cancellationToken = default)
+        {
+            var deleted = new List<SnykBulkDeletedProject>();
+            var failed = new List<SnykBulkDeleteFailure>();
+            var unreported = new List<string>();
+
+            if (projectIds.Count == 0)
+            {
+                return new SnykBulkDeleteResult { Deleted = deleted, Failed = failed, Unreported = unreported };
+            }
+
+            var url = _transport.BuildUrl($"/orgs/{Uri.EscapeDataString(orgId)}/projects/bulk-delete");
+
+            foreach (var batch in projectIds.Chunk(BulkDeleteBatchSize))
+            {
+                var data = new JsonArray();
+                foreach (var id in batch)
+                {
+                    data.Add(new JsonObject { ["type"] = "project", ["id"] = id });
+                }
+
+                var body = new JsonObject { ["data"] = data }.ToJsonString();
+
+                using var doc = await PostBulkDeleteBatchAsync(url, body, cancellationToken);
+                if (doc is null
+                    || doc.RootElement.ValueKind != JsonValueKind.Object
+                    || !doc.RootElement.TryGetProperty("meta", out var meta)
+                    || meta.ValueKind != JsonValueKind.Object)
+                {
+                    // The endpoint's success schema requires a meta summary; without it there is no way to tell
+                    // which projects were deleted. Throwing would hide that Snyk may already have deleted them, so
+                    // the batch is reported as unconfirmed for the caller to verify.
+                    unreported.AddRange(batch);
+                    continue;
+                }
+
+                // An entry without an id cannot be matched to a requested project, so it is skipped; callers that
+                // need every project accounted for should compare the ids they sent against both lists.
+                if (meta.TryGetProperty("deleted", out var deletedArray) && deletedArray.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in deletedArray.EnumerateArray())
+                    {
+                        if (JsonReader.Str(item, "id") is { Length: > 0 } id)
+                        {
+                            deleted.Add(new SnykBulkDeletedProject { Id = id, Name = JsonReader.Str(item, "name") });
+                        }
+                    }
+                }
+
+                if (meta.TryGetProperty("failed", out var failedArray) && failedArray.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in failedArray.EnumerateArray())
+                    {
+                        if (JsonReader.Str(item, "id") is { Length: > 0 } id)
+                        {
+                            failed.Add(new SnykBulkDeleteFailure
+                            {
+                                Id = id,
+                                Name = JsonReader.Str(item, "name"),
+                                Reason = JsonReader.Str(item, "reason"),
+                            });
+                        }
+                    }
+                }
+            }
+
+            return new SnykBulkDeleteResult { Deleted = deleted, Failed = failed, Unreported = unreported };
+        }
+
+        /// <summary>
+        /// Posts one bulk-delete batch. Returns null when the success response has no parseable JSON body; a
+        /// non-2xx still throws <see cref="SnykApiException"/>.
+        /// </summary>
+        private async Task<JsonDocument?> PostBulkDeleteBatchAsync(string url, string body, CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await _transport.PostOrEmptyAsync(url, body, cancellationToken);
+            }
+            catch (JsonException)
+            {
+                // Only a success response's body is parsed, so this is a 2xx whose outcome cannot be read.
+                return null;
+            }
         }
     }
 
