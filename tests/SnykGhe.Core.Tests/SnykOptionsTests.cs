@@ -30,6 +30,33 @@ namespace SnykGhe.Core.Tests
         }
 
         [Fact]
+        public void ScanRetry_DefaultsToOneRetryAfterFifteenSeconds()
+        {
+            var options = new SnykOptions();
+
+            Assert.Equal(1, options.ScanMaxRetries);
+            Assert.Equal(15, options.ScanRetryDelaySeconds);
+        }
+
+        [Fact]
+        public void ScanRetry_BindsFromConfiguration()
+        {
+            var config = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Snyk:ScanMaxRetries"] = "0",
+                    ["Snyk:ScanRetryDelaySeconds"] = "30",
+                })
+                .Build();
+
+            var options = new SnykOptions();
+            config.GetSection(SnykOptions.SectionName).Bind(options);
+
+            Assert.Equal(0, options.ScanMaxRetries);
+            Assert.Equal(30, options.ScanRetryDelaySeconds);
+        }
+
+        [Fact]
         public void CleanupOnPullRequestClose_DefaultsToTrue()
         {
             var options = new SnykOptions();

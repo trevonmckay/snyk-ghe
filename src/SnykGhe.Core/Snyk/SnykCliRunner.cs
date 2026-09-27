@@ -33,6 +33,10 @@ namespace SnykGhe.Core.Snyk
     {
         private const string NuGetEcosystem = "nuget";
 
+        // A failed attempt that ran longer than this share of the scan timeout is not retried, so a slow
+        // failure does not get an equally slow second try that would stretch the queue's lock window.
+        private const double RetryableAttemptTimeoutShare = 0.5;
+
         private readonly SnykOptions _options;
         private readonly SnykOAuthTokenProvider _oauthTokenProvider;
         private readonly IHostApplicationLifetime _appLifetime;
@@ -108,6 +112,82 @@ namespace SnykGhe.Core.Snyk
                 return new SnykCliOutcome { TimedOut = true };
             }
         }
+
+        /// <summary>
+        /// Runs a scan like <see cref="RunAsync"/>, re-running it up to <see cref="SnykOptions.ScanMaxRetries"/>
+        /// times, <see cref="SnykOptions.ScanRetryDelaySeconds"/> apart, while <paramref name="isRetryable"/>
+        /// classifies the outcome as a transient failure and the failed attempt finished within half of
+        /// <see cref="SnykOptions.ScanTimeoutSeconds"/>. Returns the last attempt's outcome, so a failure that
+        /// is not retried is reported exactly as a single failed attempt would be.
+        /// </summary>
+        public Task<SnykCliOutcome> RunWithRetryAsync(
+            IReadOnlyList<string> args,
+            string workingDirectory,
+            Func<SnykCliOutcome, bool> isRetryable,
+            CancellationToken cancellationToken) =>
+            RetryAsync(
+                token => RunAsync(args, workingDirectory, token),
+                isRetryable,
+                Math.Max(0, _options.ScanMaxRetries),
+                TimeSpan.FromSeconds(Math.Max(0, _options.ScanRetryDelaySeconds)),
+                TimeSpan.FromSeconds(_options.ScanTimeoutSeconds * RetryableAttemptTimeoutShare),
+                TimeProvider.System,
+                _logger,
+                cancellationToken);
+
+        /// <summary>
+        /// The retry loop behind <see cref="RunWithRetryAsync"/>, separated from the CLI so the policy is
+        /// unit-testable. An attempt that fails after running longer than
+        /// <paramref name="maxRetryableAttemptDuration"/> ends the retries. Cancellation during the delay
+        /// propagates, like cancellation of an attempt.
+        /// </summary>
+        internal static async Task<SnykCliOutcome> RetryAsync(
+            Func<CancellationToken, Task<SnykCliOutcome>> attempt,
+            Func<SnykCliOutcome, bool> isRetryable,
+            int maxRetries,
+            TimeSpan delay,
+            TimeSpan maxRetryableAttemptDuration,
+            TimeProvider timeProvider,
+            ILogger logger,
+            CancellationToken cancellationToken)
+        {
+            var started = timeProvider.GetTimestamp();
+            var outcome = await attempt(cancellationToken);
+            var elapsed = timeProvider.GetElapsedTime(started);
+
+            for (var retry = 1; retry <= maxRetries && isRetryable(outcome); retry++)
+            {
+                if (elapsed > maxRetryableAttemptDuration)
+                {
+                    logger.LogWarning(
+                        "Snyk CLI failed with a retryable error (exit {Code}) after {Elapsed}s, longer than the {Limit}s retry limit; not retrying. {Detail}",
+                        outcome.ExitCode, (int)elapsed.TotalSeconds, (int)maxRetryableAttemptDuration.TotalSeconds, outcome.Detail.Trim());
+                    break;
+                }
+
+                logger.LogWarning(
+                    "Snyk CLI failed with a retryable error (exit {Code}); retry {Retry} of {MaxRetries} in {Delay}s. {Detail}",
+                    outcome.ExitCode, retry, maxRetries, delay.TotalSeconds, outcome.Detail.Trim());
+
+                await Task.Delay(delay, cancellationToken);
+                started = timeProvider.GetTimestamp();
+                outcome = await attempt(cancellationToken);
+                elapsed = timeProvider.GetElapsedTime(started);
+
+                logger.LogInformation("Snyk CLI retry {Retry} of {MaxRetries} exited {Code}.", retry, maxRetries, outcome.ExitCode);
+            }
+
+            return outcome;
+        }
+
+        /// <summary>
+        /// True when a CLI outcome is worth re-running: exit 2, which the CLI uses for its own and Snyk backend
+        /// errors. Exits 0/1 are real results and 3 means nothing to scan. Undocumented codes, including a
+        /// signal kill outside host shutdown (e.g. an OOM of the child), are not transient. A timeout would
+        /// likely time out again, and an authentication failure never ran the CLI.
+        /// </summary>
+        internal static bool IsTransientFailure(SnykCliOutcome outcome) =>
+            !outcome.AuthenticationFailed && !outcome.TimedOut && outcome.ExitCode == 2;
 
         /// <summary>
         /// True when a CLI outcome should be treated as a shutdown interruption rather than a scan failure:

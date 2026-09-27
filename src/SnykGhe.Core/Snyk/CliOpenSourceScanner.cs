@@ -27,7 +27,8 @@ namespace SnykGhe.Core.Snyk
             SnykCliRunner.AddOrgArg(args, context.Policy);
             SnykCliRunner.AddExcludeArgs(args, context.Policy);
 
-            var outcome = await _cli.RunAsync(args, context.WorkingDirectory, cancellationToken);
+            var outcome = await _cli.RunWithRetryAsync(
+                args, context.WorkingDirectory, SnykCliRunner.IsTransientFailure, cancellationToken);
             var result = InterpretOutcome(outcome);
 
             if (result.NotApplicable)

@@ -93,6 +93,20 @@ namespace SnykGhe.Core.Configuration
         public int ScanTimeoutSeconds { get; set; } = 600;
 
         /// <summary>
+        /// How many times a Snyk CLI scan that fails with exit code 2 (a CLI or Snyk backend error, e.g. Snyk
+        /// Code's "one or more components failed to be processed") is re-run before its check reports "could not
+        /// complete". <c>0</c> disables retries. Timeouts, authentication failures, and errors that classify as
+        /// "not enabled" or "nothing to scan" are never retried. Neither is an attempt that failed after
+        /// running longer than half of <see cref="ScanTimeoutSeconds"/>, so with one retry a failing scan runs
+        /// at most 1.5 × <see cref="ScanTimeoutSeconds"/> plus the delay. The PR's scans run one after another,
+        /// and their total must still fit the queue's lock-renewal / visibility window.
+        /// </summary>
+        public int ScanMaxRetries { get; set; } = 1;
+
+        /// <summary>Seconds to wait before re-running a scan that failed with a retryable error.</summary>
+        public int ScanRetryDelaySeconds { get; set; } = 15;
+
+        /// <summary>
         /// Timeout for a single <c>snyk monitor</c> invocation. Monitoring uploads a dependency
         /// snapshot to Snyk and can be slower than a test scan on large repos, so it gets its own
         /// (larger) bound rather than sharing <see cref="ScanTimeoutSeconds"/>.
