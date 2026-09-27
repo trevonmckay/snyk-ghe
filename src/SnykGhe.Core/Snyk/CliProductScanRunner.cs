@@ -22,7 +22,7 @@ namespace SnykGhe.Core.Snyk
             Func<string, ProductScanResult> parse,
             CancellationToken cancellationToken)
         {
-            var outcome = await _cli.RunAsync(args, context.WorkingDirectory, cancellationToken);
+            var outcome = await _cli.RunWithRetryAsync(args, context.WorkingDirectory, IsRetryable, cancellationToken);
 
             if (outcome.AuthenticationFailed)
             {
@@ -81,6 +81,15 @@ namespace SnykGhe.Core.Snyk
                 args.Add($"--target-reference={context.TargetReference}");
             }
         }
+
+        /// <summary>
+        /// True when a Code / IaC outcome is a transient failure worth re-running. Some exit-2 outputs mean the
+        /// product is not enabled or there is nothing to scan; those are skipped rather than retried.
+        /// </summary>
+        internal static bool IsRetryable(SnykCliOutcome outcome) =>
+            SnykCliRunner.IsTransientFailure(outcome)
+            && !LooksNotEnabled(outcome.Detail)
+            && !LooksNoScanTarget(outcome.Detail);
 
         internal static bool LooksNotEnabled(string? stderr)
         {
