@@ -31,6 +31,8 @@ namespace SnykGhe.Core.Tests
                 SnykCliRunner.IsTransientFailure,
                 maxRetries,
                 TimeSpan.Zero,
+                TimeSpan.FromMinutes(5),
+                TimeProvider.System,
                 NullLogger.Instance,
                 cancellationToken);
 
@@ -105,8 +107,50 @@ namespace SnykGhe.Core.Tests
             };
 
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => SnykCliRunner.RetryAsync(
-                attempt, SnykCliRunner.IsTransientFailure, 1, TimeSpan.FromMinutes(1), NullLogger.Instance, cts.Token));
+                attempt, SnykCliRunner.IsTransientFailure, 1, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5),
+                TimeProvider.System, NullLogger.Instance, cts.Token));
             Assert.Equal(1, counter.Value);
+        }
+
+        [Theory]
+        [InlineData(301, 1)] // failed after more than the limit: not retried
+        [InlineData(300, 2)] // failed exactly at the limit: retried
+        public async Task RetryAsync_SlowFailedAttempt_IsNotRetried(int attemptSeconds, int expectedAttempts)
+        {
+            var clock = new ManualTimeProvider();
+            var counter = new Counter();
+            Func<CancellationToken, Task<SnykCliOutcome>> attempt = _ =>
+            {
+                counter.Value++;
+                clock.Advance(TimeSpan.FromSeconds(attemptSeconds));
+                return Task.FromResult(BackendError);
+            };
+
+            var outcome = await SnykCliRunner.RetryAsync(
+                attempt, SnykCliRunner.IsTransientFailure, 1, TimeSpan.Zero, TimeSpan.FromSeconds(300),
+                clock, NullLogger.Instance, CancellationToken.None);
+
+            Assert.Same(BackendError, outcome);
+            Assert.Equal(expectedAttempts, counter.Value);
+        }
+
+        [Fact]
+        public async Task RetryAsync_SlowRetry_EndsFurtherRetries()
+        {
+            var clock = new ManualTimeProvider();
+            var counter = new Counter();
+            Func<CancellationToken, Task<SnykCliOutcome>> attempt = _ =>
+            {
+                counter.Value++;
+                clock.Advance(TimeSpan.FromSeconds(counter.Value == 1 ? 10 : 400));
+                return Task.FromResult(BackendError);
+            };
+
+            await SnykCliRunner.RetryAsync(
+                attempt, SnykCliRunner.IsTransientFailure, 3, TimeSpan.Zero, TimeSpan.FromSeconds(300),
+                clock, NullLogger.Instance, CancellationToken.None);
+
+            Assert.Equal(2, counter.Value);
         }
 
         [Theory]
@@ -145,6 +189,17 @@ namespace SnykGhe.Core.Tests
         private sealed class Counter
         {
             public int Value { get; set; }
+        }
+
+        private sealed class ManualTimeProvider : TimeProvider
+        {
+            private long _timestamp;
+
+            public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+            public override long GetTimestamp() => _timestamp;
+
+            public void Advance(TimeSpan by) => _timestamp += by.Ticks;
         }
     }
 }
